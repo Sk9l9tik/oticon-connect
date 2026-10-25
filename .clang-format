@@ -1,0 +1,47 @@
+# Style for src/: BTstack names are long (gatt_client_read_value_of_characteristics_by_uuid16),
+# so lines are wider and wrapped arguments get a fixed indent instead of aligning to "(".
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++17
+
+ColumnLimit: 100
+IndentWidth: 2
+ContinuationIndentWidth: 4
+
+# Long call: break after "(" and indent the arguments by 4, not up to column 60
+AlignAfterOpenBracket: AlwaysBreak
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: true
+BinPackParameters: true
+PenaltyReturnTypeOnItsOwnLine: 200
+
+# switch over events: case labels one level in, block inside braces aligned with case
+IndentCaseLabels: true
+IndentCaseBlocks: false
+
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+# Comment column for struct fields and constants
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+SpacesBeforeTrailingComments: 2
+AlignConsecutiveDeclarations: None
+AlignConsecutiveAssignments: None
+
+# Don't reorder includes across groups: extern "C" { rijndael.h } must stay as is
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+
+ReflowComments: true
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+InsertNewlineAtEOF: true

@@ -1,0 +1,17 @@
+bond/
+build/
+
+*.md
+!README.md
+
+.cache/
+
+# keys and traces: the HCI trace carries the LTK (LE Start Encryption)
+keys.json
+*.btsnoop
+*.pklg
+
+# generated audio
+*.raw
+*.wav
+out.g722
