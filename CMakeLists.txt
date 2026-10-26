@@ -1,6 +1,8 @@
 # Compiler: pick it when configuring, e.g. CXX=clang++ cmake -B build
 cmake_minimum_required(VERSION 3.20)
-project(oticon_connect C CXX)
+
+set(project_name oticon_connect)
+project(${project_name} C CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 23)
@@ -65,12 +67,12 @@ project_warnings(asha)
 # ---------------------------------------------------------------------------
 
 # app/: the client: options, signals, BTstack init (main.cc) + glue (asha_probe.cc)
-add_executable(asha_probe
+add_executable(${project_name}
     src/app/asha_probe.cc
     src/app/main.cc
 )
-target_link_libraries(asha_probe asha audio_pipewire)
-project_warnings(asha_probe)
+target_link_libraries(${project_name} asha audio_pipewire)
+project_warnings(${project_name})
 
 # tools/: sine -> G.722 file
 add_executable(g722_gen tools/g722_gen.cc)
