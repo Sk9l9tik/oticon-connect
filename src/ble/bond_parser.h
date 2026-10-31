@@ -5,7 +5,7 @@
 
 // Keys of one bonded LE device, in the form le_device_db expects
 struct Bond {
-  bd_addr_t identity = {};               // identity address of the peer (never on air, the RPA is)
+  bd_addr_t identity = {};  // identity address of the peer (never on air, the RPA is)
   int identity_type = BD_ADDR_TYPE_LE_PUBLIC;  // public or static random
   sm_key_t irk;                    // Identity Resolving Key, MSB-first: resolves the RPA
   sm_key_t ltk;                    // Long Term Key, MSB-first: encrypts the link
@@ -23,5 +23,9 @@ bool load_bond(const char* path, Bond& bond);
 // BlueZ keeps the bond in a directory named after the peer:
 // ".../00:19:8E:B9:8B:0A/info" -> 00:19:8E:B9:8B:0A. false for a copy elsewhere.
 bool identity_from_path(const char* path, bd_addr_t addr);
+
+// ".../8C:68:8B:81:C0:E7/00:19:8E:B9:8B:0A/info" -> 8C:68:8B:81:C0:E7, the
+// adapter the bond belongs to. false for a copy elsewhere.
+bool adapter_from_path(const char* path, bd_addr_t addr);
 
 #endif  // BLE_BOND_PARSER_H_

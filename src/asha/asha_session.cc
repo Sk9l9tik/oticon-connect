@@ -1,7 +1,8 @@
-#include "asha/asha_session.h"
-
+#include <algorithm>
 #include <cstdio>
 #include <utility>
+
+#include "asha/asha_session.h"
 
 static const uint16_t ASHA_SERVICE = 0xFDF0;
 
@@ -36,9 +37,10 @@ static void print_rop(std::span<const uint8_t> v) {
 }
 
 AshaSession::AshaSession(
-    BondSpec bond, FrameSource& source, int volume, std::function<void()> on_finished)
+    BondSpec bond, FrameSource& source, int volume, std::function<void()> on_finished,
+    std::function<void()> on_no_bond)
     : link_(std::move(bond), *this), stream_(source, link_, [this] { stop(); }),
-      on_finished_(std::move(on_finished)), stop_timer_([this] {
+      on_finished_(std::move(on_finished)), on_no_bond_(std::move(on_no_bond)), stop_timer_([this] {
         printf("no answer to Stop\n");
         link_.shutdown();
       }),
@@ -55,6 +57,7 @@ void AshaSession::stop() {
   if (stopping_)
     return;
   stopping_ = true;
+  retry_timer_.cancel();  // Ctrl+C during the backoff
   bool streaming = state_ == State::Streaming;
   state_ = State::Stopping;
   if (!streaming) {
@@ -180,6 +183,7 @@ void AshaSession::on_notification(uint16_t value_handle, std::span<const uint8_t
   if (audio_status != 0)
     return fail_setup("Start (aid rejected it)");
   state_ = State::Streaming;
+  backoff_ms_ = 1000;
   stream_.start();
 }
 
@@ -188,12 +192,36 @@ void AshaSession::on_coc_can_send() {
 }
 
 // Final: whatever the state, the link is gone
+// Nothing set up yet on this adapter: the app tries the next one
+void AshaSession::on_no_bond() {
+  if (!stopping_ && on_no_bond_)
+    on_no_bond_();
+}
+
 void AshaSession::on_link_down() {
   if (state_ == State::Streaming)
     stream_.stop();  // the aid dropped the link mid-stream
   state_ = State::Stopping;
   stopping_ = true;
   stop_timer_.cancel();
+  retry_timer_.cancel();
   if (on_finished_)
     on_finished_();
+}
+
+void AshaSession::on_link_lost(uint8_t reason) {
+  if (state_ == State::Streaming)
+    stream_.stop();  // the aid dropped the link mid-stream
+
+  if (stopping_) {     // stop() already running: finish instead of retrying
+    link_.shutdown();  // state Off -> go_down -> on_link_down -> on_finished
+    return;
+  }
+
+  stop_timer_.cancel();
+  state_ = State::Setup;
+  psm_ = rop_ = acp_ = status_ = volume_chr_ = psm_chr_ = 0;
+  printf("link lost 0x%02x, retry in %u ms\n", reason, backoff_ms_);
+  retry_timer_.start(backoff_ms_);
+  backoff_ms_ = std::min(backoff_ms_ * 2, 30000u);
 }

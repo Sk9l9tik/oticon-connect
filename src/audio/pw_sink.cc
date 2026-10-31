@@ -12,6 +12,7 @@ static pw_stream_events make_stream_events() {
   ev.process = &PwSink::on_process;
   return ev;
 }
+
 static const pw_stream_events stream_events = make_stream_events();
 
 PwSink::PwSink() {

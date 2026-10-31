@@ -18,10 +18,12 @@
 // stop() (Ctrl+C or end of source): Stop -> link shutdown -> on_finished.
 class AshaSession : private BleLink::Listener {
 public:
+  // on_no_bond: the adapter that came up has no bond for the aid (see BleLink)
   AshaSession(
-      BondSpec bond, FrameSource& source, int volume, std::function<void()> on_finished);
+      BondSpec bond, FrameSource& source, int volume, std::function<void()> on_finished,
+      std::function<void()> on_no_bond);
 
-  void start();  // power on; the rest follows from events
+  void start();  // init the stack; the rest follows once an adapter is powered on
   void stop();   // from any state; on_finished comes at the end
 
 private:
@@ -36,7 +38,9 @@ private:
   void on_link_ready() override;
   void on_notification(uint16_t value_handle, std::span<const uint8_t> value) override;
   void on_coc_can_send() override;
+  void on_no_bond() override;
   void on_link_down() override;
+  void on_link_lost(uint8_t reason) override;
 
   // the setup chain, in order: each step starts the next from its callback
   void on_chars(bool ok, const std::vector<GattChar>& chars);
@@ -52,6 +56,7 @@ private:
   BleLink link_;
   AudioStream stream_;
   std::function<void()> on_finished_;
+  std::function<void()> on_no_bond_;
   Timer stop_timer_;  // the aid does not confirm Stop: shut down anyway
 
   State state_ = State::Setup;
@@ -61,6 +66,9 @@ private:
   uint16_t psm_ = 0;
   // value handles of the ASHA characteristics, 0 = not found
   uint16_t rop_ = 0, acp_ = 0, status_ = 0, volume_chr_ = 0, psm_chr_ = 0;
+
+  Timer retry_timer_{[this] { link_.reconnect(); }};
+  uint32_t backoff_ms_ = 1000;  // 1 → 2 → 4 … 30 s, back to 1 s once streaming
 };
 
 #endif  // ASHA_ASHA_SESSION_H_

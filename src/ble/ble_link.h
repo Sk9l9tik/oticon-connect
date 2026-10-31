@@ -22,8 +22,10 @@ struct GattChar {
 
 // Which bond to use, decided on HCI_STATE_WORKING (the device DB needs the TLV)
 struct BondSpec {
-  std::optional<Bond> import;                 // from a BlueZ file: saved into the DB, then used
+  std::optional<Bond> import;                  // from a BlueZ file: saved into the DB, then used
   std::optional<std::array<uint8_t, 6>> peer;  // stored bond of this peer; neither: the only one
+  // import: only into this adapter (BlueZ keeps the bond under the adapter's address)
+  std::optional<std::array<uint8_t, 6>> adapter;
 };
 
 // BLE transport to one bonded peer over BTstack:
@@ -45,7 +47,12 @@ public:
     virtual void on_link_ready() = 0;  // connected, encrypted, GATT usable
     virtual void on_notification(uint16_t value_handle, std::span<const uint8_t> value) = 0;
     virtual void on_coc_can_send() = 0;  // one SDU may go out now
-    virtual void on_link_down() = 0;     // disconnected or never connected; final
+    // this adapter has no bond for the peer: power it off and try another one,
+    // the next HCI_STATE_WORKING picks the bond again
+    virtual void on_no_bond() = 0;
+    // dropped (or connect failed) without shutdown(): reconnect() may follow
+    virtual void on_link_lost(uint8_t reason) = 0;
+    virtual void on_link_down() = 0;  // after shutdown() or no bond; final
   };
 
   using Done = std::function<void(bool ok)>;
@@ -54,13 +61,17 @@ public:
   BleLink(const BleLink&) = delete;
   BleLink& operator=(const BleLink&) = delete;
 
-  // Inits l2cap/sm/gatt, powers on; on HCI_STATE_WORKING picks the bond and
-  // scans; ends in on_link_ready or on_link_down (also when there is no bond)
+  // Inits l2cap/sm/gatt; powering on is the caller's (it picks the adapter).
+  // On every HCI_STATE_WORKING picks the bond and scans; ends in on_link_ready,
+  // or on_no_bond when this adapter has none
   void start();
 
   // Unwinds from any state; on_link_down follows (at the latest after a
   // fallback timeout). Pending operation callbacks are not called any more.
   void shutdown();
+
+  // Only after on_link_lost: scan again with the same bond
+  void reconnect();
 
   // --- GATT (one at a time) ---
   void discover_characteristics(
@@ -98,6 +109,7 @@ private:
 
   bool pick_bond();
   void go_down();
+  void lose(uint8_t reason);
   void fail(const char* what, uint8_t status);  // log + disconnect
   bool rpa_matches_irk(const uint8_t* addr) const;
   gatt_client_characteristic_t* find_char(uint16_t value_handle);

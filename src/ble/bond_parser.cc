@@ -82,14 +82,25 @@ bool load_bond(const char* path, Bond& bond) {
   return true;
 }
 
-bool identity_from_path(const char* path, bd_addr_t addr) {
+// Address in the directory `up` levels above the file: 1 = the peer, 2 = the adapter
+static bool addr_from_path(const char* path, int up, bd_addr_t addr) {
   std::string p(path);
-  auto slash = p.rfind('/');
-  if (slash == std::string::npos)
-    return false;
-  p.resize(slash);  // the directory
+  for (int i = 0; i < up; i++) {
+    auto slash = p.rfind('/');
+    if (slash == std::string::npos)
+      return false;
+    p.resize(slash);
+  }
   auto start = p.rfind('/');
   std::string dir = p.substr(start == std::string::npos ? 0 : start + 1);
   // "AA:BB:CC:DD:EE:FF": sscanf_bd_addr also accepts other forms, so check the length
   return dir.size() == 17 && sscanf_bd_addr(dir.c_str(), addr) == 1;
+}
+
+bool identity_from_path(const char* path, bd_addr_t addr) {
+  return addr_from_path(path, 1, addr);
+}
+
+bool adapter_from_path(const char* path, bd_addr_t addr) {
+  return addr_from_path(path, 2, addr);
 }

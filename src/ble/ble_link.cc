@@ -7,13 +7,14 @@
 //     without it answer ATTRIBUTE_NOT_FOUND: fine, go on
 //   - BTstack does not resolve advertisements itself: RPA matched by hand
 
-#include "ble/ble_link.h"
-
 #include <strings.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <utility>
+
+#include "ble/ble_link.h"
 
 #include "ble/bond_store.h"
 
@@ -32,7 +33,8 @@ static btstack_packet_callback_registration_t hci_cb;  // HCI / GAP events
 static btstack_packet_callback_registration_t sm_cb;   // Security Manager events
 
 BleLink::BleLink(BondSpec bond, Listener& listener)
-    : spec_(std::move(bond)), listener_(listener), con_handle_(HCI_CON_HANDLE_INVALID), enc_timer_([this] {
+    : spec_(std::move(bond)), listener_(listener), con_handle_(HCI_CON_HANDLE_INVALID),
+      enc_timer_([this] {
         // bonded: SM finds the LTK in le_device_db and re-encrypts, no pairing
         printf("request encryption\n");
         sm_request_pairing(con_handle_);
@@ -56,9 +58,7 @@ void BleLink::start() {
   // SM events go only to SM subscribers, not to HCI handlers
   sm_cb.callback = &hci_trampoline;
   sm_add_event_handler(&sm_cb);
-
-  // async: HCI_STATE_WORKING arrives in on_hci_event when the stack is up
-  hci_power_control(HCI_POWER_ON);
+  // HCI_STATE_WORKING arrives in on_hci_event once the caller powers an adapter on
 }
 
 // Off, Scanning -> down now (power off stops the scan itself)
@@ -97,6 +97,26 @@ void BleLink::go_down() {
   listener_.on_link_down();
 }
 
+void BleLink::lose(uint8_t reason) {
+  state_ = State::Off;
+  enc_timer_.cancel();
+  on_query_complete_ = nullptr;
+  on_conn_update_ = nullptr;
+  on_coc_open_ = nullptr;
+  coc_cid_ = 0;
+  // notification_ is still linked in BTstack's list; subscribe() would link it a second time
+  gatt_client_stop_listening_for_characteristic_value_updates(&notification_);
+  listener_.on_link_lost(reason);
+}
+
+void BleLink::reconnect() {
+  if (stopping_ || down_ || state_ != State::Off)
+    return;
+  gap_set_scan_params(0, 0x30, 0x30, 0);
+  gap_start_scan();
+  state_ = State::Scanning;  // bond_ already picked, no pick_bond()
+}
+
 void BleLink::fail(const char* what, uint8_t status) {
   printf("%s failed 0x%02x\n", what, status);
   if (con_handle_ != HCI_CON_HANDLE_INVALID)
@@ -108,6 +128,13 @@ void BleLink::fail(const char* what, uint8_t status) {
 // first (same identity -> same entry), else a stored one is looked up.
 bool BleLink::pick_bond() {
   if (spec_.import) {
+    bd_addr_t local;
+    gap_local_bd_addr(local);
+    if (spec_.adapter && memcmp(local, spec_.adapter->data(), 6) != 0) {
+      printf("bond file is for adapter %s, ", bd_addr_to_str(spec_.adapter->data()));
+      printf("this is %s\n", bd_addr_to_str(local));
+      return false;
+    }
     bond_store_save(*spec_.import);
     bond_ = *spec_.import;
     return true;
@@ -337,7 +364,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
       if (btstack_event_state_get_state(packet) != HCI_STATE_WORKING || stopping_)
         break;
       if (!pick_bond()) {
-        go_down();
+        listener_.on_no_bond();  // state stays Off: another adapter may come up
         break;
       }
       printf("peer %s, start scan\n", bd_addr_to_str(bond_.identity));
@@ -374,7 +401,10 @@ void BleLink::on_hci_event(uint8_t* packet) {
       if (status != ERROR_CODE_SUCCESS) {
         // also the result of gap_connect_cancel() on shutdown (0x02)
         printf("connect failed 0x%02x\n", status);
-        go_down();
+        if (stopping_)
+          go_down();
+        else
+          lose(status);  // e.g. 0x3E at the edge of range: retry
         break;
       }
       con_handle_ = gap_subevent_le_connection_complete_get_connection_handle(packet);
@@ -409,12 +439,18 @@ void BleLink::on_hci_event(uint8_t* packet) {
       break;
     }
 
-    case HCI_EVENT_DISCONNECTION_COMPLETE:
+    case HCI_EVENT_DISCONNECTION_COMPLETE: {
       // 0x16 = we disconnected, 0x13 = the peer did, 0x08 = supervision timeout
-      printf("disconnected, reason 0x%02x\n", hci_event_disconnection_complete_get_reason(packet));
+      uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
+      printf("disconnected, reason 0x%02x\n", reason);
       con_handle_ = HCI_CON_HANDLE_INVALID;
-      go_down();
+      if (stopping_) {
+        go_down();
+        break;
+      }
+      lose(reason);
       break;
+    }
 
     case HCI_EVENT_ENCRYPTION_CHANGE: {
       // controller confirms the link is encrypted: GATT reads are allowed now

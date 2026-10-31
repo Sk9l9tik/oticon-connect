@@ -5,10 +5,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <signal.h>
 #include <string>
+#include <vector>
 
 #include "btstack_chipset_realtek.h"
 #include "btstack_event.h"
@@ -24,8 +27,10 @@
 #include "hci_transport_usb.h"
 
 #include "app/asha_app.h"
+#include "app/usb_adapters.h"
 
 #include "ble/le_device_db_tlv.h"
+#include "ble/timer.h"
 
 #define USB_VENDOR_ID_REALTEK 0x0bda
 
@@ -36,6 +41,7 @@
 
 static btstack_tlv_posix_t tlv_context;  // static: BTstack keeps a pointer
 static bool tlv_open = false;
+static bd_addr_t tlv_adapter;  // whose TLV is open
 
 // $XDG_STATE_HOME/oticon-connect/btstack_<adapter>.tlv, fallback ~/.local/state/...
 static std::string tlv_path(const bd_addr_t adapter) {
@@ -50,8 +56,12 @@ static std::string tlv_path(const bd_addr_t adapter) {
 }
 
 static void open_tlv(const bd_addr_t adapter) {
-  if (tlv_open)  // BD_ADDR may be read again, e.g. after a firmware download
-    return;
+  if (tlv_open) {
+    if (memcmp(tlv_adapter, adapter, 6) == 0)  // read again, e.g. after a firmware download
+      return;
+    btstack_tlv_posix_deinit(&tlv_context);  // another adapter came up
+  }
+  memcpy(tlv_adapter, adapter, 6);
   std::string path = tlv_path(adapter);
   const btstack_tlv_t* tlv = btstack_tlv_posix_init_instance(&tlv_context, path.c_str());
   chmod(path.c_str(), 0600);  // LTKs inside
@@ -62,14 +72,100 @@ static void open_tlv(const bd_addr_t adapter) {
 }
 
 // ---------------------------------------------------------------------------
+// Adapter selection: every Bluetooth controller on USB, external or built-in,
+// external first. One is powered on at a time; it is dropped (and the next one
+// tried) when it can't be opened, its init hangs, or it has no bond for the
+// aid. None left: rescan every RESCAN_MS until one is plugged in.
+// ---------------------------------------------------------------------------
+
+static const uint32_t RESCAN_MS = 2000;
+static const uint32_t INIT_TIMEOUT_MS = 10000;  // power on -> HCI_STATE_WORKING
+
+static UsbAdapter usb_filter;  // --usb: only this one
+static bool have_usb_filter = false;
+static std::vector<UsbAdapter> rejected;  // dropped ones, forgotten once unplugged
+static UsbAdapter current;                // powered on, or being powered on
+static bool have_current = false;
+static bool finishing = false;  // the app is done: power off and leave
+static bool told_waiting = false;
+
+static bool listed(const std::vector<UsbAdapter>& v, const UsbAdapter& a) {
+  return std::any_of(v.begin(), v.end(), [&](const UsbAdapter& x) { return x.same_place(a); });
+}
+
+static void try_next_adapter();
+static void drop_adapter(const char* why);
+// Deferred through the run loop: these are started from inside BTstack's event
+// dispatch, where powering on/off right away would re-enter it
+static Timer next_timer([] { try_next_adapter(); });
+static Timer init_timer([] { drop_adapter("init timed out"); });
+static Timer no_bond_timer([] { drop_adapter("no bond for the aid"); });
+
+static void try_next_adapter() {
+  if (finishing)
+    return;
+  std::vector<UsbAdapter> found = find_usb_adapters();
+  // a dropped adapter that was unplugged gets another chance when it is back
+  std::erase_if(rejected, [&](const UsbAdapter& r) { return !listed(found, r); });
+  for (const UsbAdapter& a : found) {
+    if ((have_usb_filter && !a.same_place(usb_filter)) || listed(rejected, a))
+      continue;
+    current = a;
+    have_current = true;
+    told_waiting = false;
+    std::printf(
+        "adapter %s (%04x:%04x, %s)\n", a.path().c_str(), a.vid, a.pid,
+        a.removable ? "external" : "built-in");
+    uint8_t ports[7];
+    std::copy(a.ports.begin(), a.ports.end(), ports);
+    hci_transport_usb_set_bus_and_path(a.bus, (int)a.ports.size(), ports);
+    init_timer.start(INIT_TIMEOUT_MS);
+    hci_power_control(HCI_POWER_ON);  // failure: BTSTACK_EVENT_POWERON_FAILED
+    return;
+  }
+  if (!told_waiting) {
+    if (have_usb_filter)
+      std::printf("waiting for the adapter at %s\n", usb_filter.path().c_str());
+    else if (found.empty())
+      std::printf("waiting for a Bluetooth adapter\n");
+    else
+      std::printf("no usable adapter (bond missing? import it with --bond), waiting for another\n");
+    told_waiting = true;
+  }
+  next_timer.start(RESCAN_MS);
+}
+
+// Power the current adapter off; HCI_STATE_OFF then tries the next one
+static void drop_adapter(const char* why) {
+  if (!have_current || finishing)
+    return;
+  std::printf("adapter %s: %s, trying the next one\n", current.path().c_str(), why);
+  rejected.push_back(current);
+  init_timer.cancel();
+  hci_power_control(HCI_POWER_OFF);
+}
+
+// The app is done (Ctrl+C, end of file, ...): power off, then leave the run loop
+static void finish() {
+  finishing = true;
+  next_timer.cancel();
+  init_timer.cancel();
+  no_bond_timer.cancel();
+  if (hci_get_state() == HCI_STATE_OFF)
+    btstack_run_loop_trigger_exit();  // between adapters: nothing to power off
+  else
+    hci_power_control(HCI_POWER_OFF);
+}
+
+// ---------------------------------------------------------------------------
 // HCI events
 // ---------------------------------------------------------------------------
 
 static btstack_packet_callback_registration_t main_hci_reg;  // static: kept in BTstack's list
 
-static void main_hci_handler(uint8_t type, uint16_t channel, uint8_t* packet, uint16_t size) {
-  (void)channel;
-  (void)size;
+static void main_hci_handler(
+    uint8_t type, [[maybe_unused]] uint16_t channel, uint8_t* packet,
+    [[maybe_unused]] uint16_t size) {
   if (type != HCI_EVENT_PACKET)
     return;
   switch (hci_event_packet_get_type(packet)) {
@@ -88,6 +184,10 @@ static void main_hci_handler(uint8_t type, uint16_t channel, uint8_t* packet, ui
         btstack_chipset_realtek_set_product_id(pid);
         hci_set_chipset(btstack_chipset_realtek_instance());
         hci_enable_custom_pre_init();
+      } else {
+        // the previous adapter may have been a Realtek one. Others run the
+        // firmware the kernel loaded (pre-init without a chipset is a no-op)
+        hci_set_chipset(nullptr);
       }
       break;
     }
@@ -105,17 +205,47 @@ static void main_hci_handler(uint8_t type, uint16_t channel, uint8_t* packet, ui
       open_tlv(addr);
       break;
     }
-    // Power off done (our shutdown or a fatal error): leave the run loop,
-    // main() then closes TLV and the trace
     case BTSTACK_EVENT_STATE:
-      if (btstack_event_state_get_state(packet) == HCI_STATE_OFF)
+      switch (btstack_event_state_get_state(packet)) {
+        case HCI_STATE_WORKING:
+          init_timer.cancel();
+          break;
+        // Power off done: dropped adapter, our shutdown or a fatal error.
+        // Give the adapter back to the kernel, then the next one or leave
+        // (main() then closes TLV and the trace)
+        case HCI_STATE_OFF:
+          if (have_current)
+            reattach_kernel_driver(current);
+          have_current = false;
+          if (finishing)
+            btstack_run_loop_trigger_exit();
+          else
+            next_timer.start(0);
+          break;
+        default:
+          break;
+      }
+      break;
+    // Transport did not open (no access, device gone): the state stays OFF
+    case BTSTACK_EVENT_POWERON_FAILED:
+      init_timer.cancel();
+      if (!have_current)
+        break;
+      std::printf(
+          "adapter %s: can't open it (no access? needs a udev rule, see README)\n",
+          current.path().c_str());
+      rejected.push_back(current);
+      reattach_kernel_driver(current);
+      have_current = false;
+      if (finishing)
         btstack_run_loop_trigger_exit();
+      else
+        next_timer.start(0);
       break;
     default:
       break;
   }
 }
-
 
 struct Options {
   std::string bond;                           // BlueZ info file to import; empty: stored bond
@@ -135,9 +265,9 @@ static void usage(const char* name) {
       "                      without it the bond saved by an earlier import is used\n"
       "  -P, --peer ADDR     aid identity address: picks a stored bond, or names the aid\n"
       "                      of a --bond file copied out of its BlueZ directory\n"
-      "  -u, --usb PATH      adapter at USB ports [bus-]port[.port...], as printed at start\n"
-      "                      or in /sys/bus/usb/devices (e.g. 1-2.3),\n"
-      "                      default: the first Bluetooth adapter found\n"
+      "  -u, --usb PATH      only the adapter at USB ports [bus-]port[.port...], as printed\n"
+      "                      at start or in /sys/bus/usb/devices (e.g. 1-2.3); default: every\n"
+      "                      Bluetooth adapter on USB, external first, the first with a bond\n"
       "  -a, --audio PATH    G.722 file to stream (default assets/tone_1k.g722)\n"
       "  -v, --volume N      volume -128..0 (default -50)\n"
       "  -t, --tone HZ       endless sine 1..7999 Hz instead of the file\n"
@@ -212,35 +342,6 @@ static bool parse_options(int argc, char** argv, Options& opt) {
   return true;
 }
 
-// "1-2.3" -> bus 1, ports {2, 3}; "2.3" -> ports {2, 3} on any bus (bus 0).
-// The libusb transport then opens only that device.
-static bool set_usb_path(const std::string& s) {
-  unsigned bus = 0;
-  int n = 0;
-  if (s.find('-') != std::string::npos &&
-      (std::sscanf(s.c_str(), "%u-%n", &bus, &n) != 1 || n == 0 || bus == 0 || bus > 255))
-    return false;
-  uint8_t ports[7];  // USB allows at most 7 tiers
-  int len = 0;
-  const char* p = s.c_str() + n;
-  while (*p) {
-    char* end;
-    unsigned long port = std::strtoul(p, &end, 10);
-    if (end == p || port == 0 || port > 255 || len == 7)
-      return false;
-    ports[len++] = static_cast<uint8_t>(port);
-    if (*end == '.' && end[1] != '\0')
-      end++;
-    else if (*end != '\0')
-      return false;
-    p = end;
-  }
-  if (len == 0)
-    return false;
-  hci_transport_usb_set_bus_and_path(static_cast<uint8_t>(bus), len, ports);
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Signals
 // ---------------------------------------------------------------------------
@@ -258,8 +359,8 @@ static void request_shutdown() {
   asha_request_stop();
 }
 
-static void on_signal(btstack_data_source_t* ds, btstack_data_source_callback_type_t type) {
-  (void)type;
+static void on_signal(
+    btstack_data_source_t* ds, [[maybe_unused]] btstack_data_source_callback_type_t type) {
   signalfd_siginfo si;
   if (read(ds->source.fd, &si, sizeof(si)) != (ssize_t)sizeof(si))
     return;
@@ -312,7 +413,8 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  if (!opt.usb.empty() && !set_usb_path(opt.usb)) {
+  have_usb_filter = !opt.usb.empty();
+  if (have_usb_filter && !parse_usb_path(opt.usb, usb_filter)) {
     std::fprintf(
         stderr, "bad USB path '%s', expected [bus-]port[.port...], e.g. 5 or 1-2.3\n",
         opt.usb.c_str());
@@ -340,10 +442,12 @@ int main(int argc, char** argv) {
       .tone_hz = opt.tone_hz,
       .pipewire = opt.pipewire,
       .volume = opt.volume,
-      .on_finished = [] { hci_power_control(HCI_POWER_OFF); },
+      .on_finished = [] { finish(); },
+      .on_no_bond = [] { no_bond_timer.start(0); },
   };
   if (!asha_start(cfg))
     return EXIT_FAILURE;
+  next_timer.start(0);  // pick an adapter and power it on, from the run loop
 
   btstack_run_loop_execute();
 

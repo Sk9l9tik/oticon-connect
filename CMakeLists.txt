@@ -70,6 +70,7 @@ project_warnings(asha)
 add_executable(${project_name}
     src/app/asha_probe.cc
     src/app/main.cc
+    src/app/usb_adapters.cc
 )
 target_link_libraries(${project_name} asha audio_pipewire)
 project_warnings(${project_name})

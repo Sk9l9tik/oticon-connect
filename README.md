@@ -49,22 +49,38 @@ Binaries: `build/asha_probe`, `build/g722_gen`, `build/pw_capture`.
 
 ## USB access
 
-BTstack takes the dongle over from the kernel driver. To run without root,
-give your user access to it with a udev rule (replace the IDs with your dongle's):
+BTstack takes the adapter over from the kernel driver. To run without root,
+give your user access to it with a udev rule. This one covers every USB
+Bluetooth controller, dongles and laptops' built-in adapters alike:
 
 ```sh
-echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="a728", MODE="0660", TAG+="uaccess"' \
-  | sudo tee /etc/udev/rules.d/70-oticon-asha-dongle.rules
+echo 'SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{bDeviceClass}=="e0", MODE="0660", TAG+="uaccess"' \
+  | sudo tee /etc/udev/rules.d/70-oticon-asha-adapters.rules
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
-Only one process can hold the dongle.
+A few adapters report the Bluetooth class only on their interface (device class
+`00`/`ef`); for those add a rule by ID, e.g.
+`SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="a728", MODE="0660", TAG+="uaccess"`.
+
+Only one process can hold an adapter. While `asha_probe` uses it, BlueZ loses
+it (other Bluetooth devices on it disconnect); on exit it is given back.
+
+## Which adapter
+
+Without `--usb`, every Bluetooth controller on USB is a candidate: external
+(removable) ones first, then built-in. They are tried one at a time, and one
+is skipped when it can't be opened, its init hangs, or it has no bond for the
+aid. When none is usable, `asha_probe` waits and rescans every 2 s, so a dongle
+can be plugged in later. A skipped adapter is tried again after a replug.
+Controllers on UART/SDIO (some laptops, ARM boards) are not reachable.
 
 ## Bond (one-time setup)
 
 `asha_probe` does not pair yet: it reuses a bond made by BlueZ **with the same
 dongle**. The aid keys the bond to the dongle's address, so a bond made with
-another adapter does not work.
+another adapter does not work. Each adapter needs its own bond (the aid keeps
+several); import one per adapter you want to use.
 
 1. Pair the aid with BlueZ on this dongle (`bluetoothctl`, then `pair <aid address>`).
    The aid must be in pairing mode, usually right after it is powered on.
@@ -81,6 +97,11 @@ another adapter does not work.
    ```sh
    ./build/asha_probe --bond bond/info --peer <aid> --tone 1000
    ```
+
+   A copied file no longer tells which adapter it belongs to: the bond goes into
+   the first adapter that comes up. With several adapters, pick it with `--usb`.
+   Read in place (`--bond /var/lib/bluetooth/<adapter>/<aid>/info`, as root),
+   it is imported only into that adapter.
 
 The bond is now stored in `~/.local/state/oticon-connect/btstack_<adapter>.tlv`
 (one file per adapter, mode 0600); later runs need no `--bond`.
@@ -112,7 +133,7 @@ PipeWire converts whatever is played to 16 kHz mono.
 | `-v`, `--volume N` | ASHA volume −128 (mute) .. 0 (max), default −50 |
 | `-b`, `--bond PATH` | import a BlueZ bond file |
 | `-P`, `--peer ADDR` | aid identity address: picks a stored bond, or names the aid of a copied `--bond` file |
-| `-u`, `--usb PATH` | use the adapter at these USB ports (`5`, or `1-2.3` as in `/sys/bus/usb/devices`); default: the first Bluetooth adapter. The ports are printed at start |
+| `-u`, `--usb PATH` | use only the adapter at these USB ports (`5`, or `1-2.3` as in `/sys/bus/usb/devices`); default: any Bluetooth adapter on USB, see [Which adapter](#which-adapter). The ports are printed at start |
 | `-l`, `--log PATH` | HCI trace, default `app.btsnoop` |
 
 Ctrl+C stops cleanly: ASHA Stop, disconnect, power off. A second Ctrl+C exits

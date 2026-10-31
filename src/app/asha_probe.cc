@@ -19,8 +19,8 @@
 #include "app/asha_app.h"
 #include "asha/asha_session.h"
 #include "audio/frame_source.h"
-#include "ble/bond_parser.h"
 #include "audio/pipewire_source.h"
+#include "ble/bond_parser.h"
 
 static const double TONE_AMPLITUDE = 0.15;
 
@@ -64,6 +64,9 @@ static bool make_bond_spec(const AppConfig& cfg, BondSpec& spec) {
     fprintf(stderr, "%s: no address in the path, give it with --peer\n", cfg.bond);
     return false;
   }
+  bd_addr_t adapter;
+  if (adapter_from_path(cfg.bond, adapter))
+    spec.adapter = std::to_array(adapter);
   spec.import = bond;
   return true;
 }
@@ -91,7 +94,8 @@ bool asha_start(const AppConfig& cfg) {
     source = std::move(file);
   }
 
-  session = std::make_unique<AshaSession>(std::move(bond), *source, cfg.volume, cfg.on_finished);
+  session = std::make_unique<AshaSession>(
+      std::move(bond), *source, cfg.volume, cfg.on_finished, cfg.on_no_bond);
   session->start();
   return true;
 }

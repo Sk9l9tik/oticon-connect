@@ -1,7 +1,7 @@
-#include "asha/audio_stream.h"
-
 #include <cstdio>
 #include <cstring>
+
+#include "asha/audio_stream.h"
 
 AudioStream::AudioStream(FrameSource& source, BleLink& link, std::function<void()> on_end)
     : source_(source), link_(link), on_end_(std::move(on_end)), timer_([this] { on_tick(); }) {
@@ -10,6 +10,10 @@ AudioStream::AudioStream(FrameSource& source, BleLink& link, std::function<void(
 void AudioStream::start() {
   printf("streaming %s\n", source_.describe().c_str());
   next_deadline_ms_ = btstack_run_loop_get_time_ms();
+  // after a reconnect: SDUs left from the old link must not go out
+  head_ = 0;
+  tail_ = 0;
+  queued_ = 0;
   on_tick();  // first frame right away
 }
 
