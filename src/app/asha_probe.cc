@@ -31,6 +31,10 @@ static std::unique_ptr<AshaSession> session;
 // --bond: the file gives the keys; the identity address comes from --peer or
 // the BlueZ directory name. No --bond: a stored bond, of --peer if given.
 static bool make_bond_spec(const AppConfig& cfg, BondSpec& spec) {
+  if (cfg.pair) {
+    spec.pair = true;
+    return true;
+  }
   bd_addr_t peer;
   bool have_peer = false;
   if (cfg.peer) {

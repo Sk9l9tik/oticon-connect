@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ble/bond_parser.h"
+#include "ble/device_picker.h"
 #include "ble/timer.h"
 
 // Characteristic as the user of the link sees it; BleLink keeps BTstack's
@@ -26,6 +27,7 @@ struct BondSpec {
   std::optional<std::array<uint8_t, 6>> peer;  // stored bond of this peer; neither: the only one
   // import: only into this adapter (BlueZ keeps the bond under the adapter's address)
   std::optional<std::array<uint8_t, 6>> adapter;
+  bool pair = false;  // --pair: new bonding with an aid in pairing mode
 };
 
 // BLE transport to one bonded peer over BTstack:
@@ -108,6 +110,8 @@ private:
   void on_coc_event(uint8_t* packet);
 
   bool pick_bond();
+  void start_scan();                         // passive for the bond; --pair: active + list
+  void connect_picked(const ScanDevice& d);  // --pair: the user's choice
   void go_down();
   void lose(uint8_t reason);
   void fail(const char* what, uint8_t status);  // log + disconnect
@@ -119,6 +123,7 @@ private:
   BondSpec spec_;
   Bond bond_;  // the one in use, set by pick_bond()
   Listener& listener_;
+  bd_addr_t paired_identity_{};  // --pair: aid identity from SM_EVENT_IDENTITY_CREATED
 
   State state_ = State::Off;
   bool stopping_ = false;  // shutdown() called: no new steps, no callbacks
@@ -127,6 +132,8 @@ private:
 
   Timer enc_timer_;   // delay before encryption (quirk)
   Timer stop_timer_;  // shutdown fallback
+
+  DevicePicker picker_;  // --pair: list of advertisers, choice from stdin
 
   // GATT: the running query and what its result events collected
   std::function<void(uint8_t att_status)> on_query_complete_;

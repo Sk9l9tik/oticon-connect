@@ -42,7 +42,8 @@ BleLink::BleLink(BondSpec bond, Listener& listener)
       stop_timer_([this] {
         printf("stop timeout, link down anyway\n");
         go_down();
-      }) {
+      }),
+      picker_([this](const ScanDevice& d) { connect_picked(d); }) {
   self_ = this;
 }
 
@@ -58,6 +59,9 @@ void BleLink::start() {
   // SM events go only to SM subscribers, not to HCI handlers
   sm_cb.callback = &hci_trampoline;
   sm_add_event_handler(&sm_cb);
+
+  sm_set_io_capabilities(IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
+  sm_set_authentication_requirements(SM_AUTHREQ_SECURE_CONNECTION | SM_AUTHREQ_BONDING);
   // HCI_STATE_WORKING arrives in on_hci_event once the caller powers an adapter on
 }
 
@@ -94,6 +98,7 @@ void BleLink::go_down() {
   state_ = State::Off;  // late events (adv reports, timers) are ignored from now on
   enc_timer_.cancel();
   stop_timer_.cancel();
+  picker_.stop();
   listener_.on_link_down();
 }
 
@@ -112,9 +117,25 @@ void BleLink::lose(uint8_t reason) {
 void BleLink::reconnect() {
   if (stopping_ || down_ || state_ != State::Off)
     return;
-  gap_set_scan_params(0, 0x30, 0x30, 0);
+  start_scan();  // bond_ already picked, no pick_bond(); --pair: pick again
+}
+
+// Bonded: passive (0), interval = window = 0x30 x 0.625 ms: listen all the time.
+// --pair: active (1), the name and the ASHA data may be only in the scan response
+void BleLink::start_scan() {
+  gap_set_scan_params(spec_.pair ? 1 : 0, 0x30, 0x30, 0);
   gap_start_scan();
-  state_ = State::Scanning;  // bond_ already picked, no pick_bond()
+  state_ = State::Scanning;
+  if (spec_.pair)
+    picker_.start();
+}
+
+void BleLink::connect_picked(const ScanDevice& d) {
+  if (stopping_ || state_ != State::Scanning)
+    return;
+  gap_stop_scan();  // quirk: scan must be off BEFORE connecting
+  gap_connect(d.addr.data(), d.type);
+  state_ = State::Connecting;
 }
 
 void BleLink::fail(const char* what, uint8_t status) {
@@ -363,21 +384,24 @@ void BleLink::on_hci_event(uint8_t* packet) {
       // stack is up (firmware, HCI Reset done): load the bond, start scanning
       if (btstack_event_state_get_state(packet) != HCI_STATE_WORKING || stopping_)
         break;
-      if (!pick_bond()) {
+      if (!spec_.pair && !pick_bond()) {
         listener_.on_no_bond();  // state stays Off: another adapter may come up
         break;
       }
-      printf("peer %s, start scan\n", bd_addr_to_str(bond_.identity));
-      // passive (0), interval = window = 0x30 x 0.625 ms: listen all the time
-      gap_set_scan_params(0, 0x30, 0x30, 0);
-      gap_start_scan();
-      state_ = State::Scanning;
+      if (!spec_.pair)
+        printf("peer %s, start scan\n", bd_addr_to_str(bond_.identity));
+      start_scan();
       break;
 
     case GAP_EVENT_ADVERTISING_REPORT: {
       // reports keep coming until the controller processes the stop
       if (state_ != State::Scanning)
         break;
+      if (spec_.pair) {
+        picker_.on_adv_report(packet);  // the user picks, connect_picked() connects
+        break;
+      }
+      // bonded: only RPAs that resolve with the IRK
       if (gap_event_advertising_report_get_address_type(packet) != BD_ADDR_TYPE_LE_RANDOM)
         break;
       bd_addr_t addr;
@@ -461,8 +485,8 @@ void BleLink::on_hci_event(uint8_t* packet) {
         fail("encryption", status);
         break;
       }
-      if (stopping_ || state_ != State::Connected)
-        break;
+      if (stopping_ || state_ != State::Connected || spec_.pair)
+        break;                   // pairing: wait for SM_EVENT_PAIRING_COMPLETE
       state_ = State::ReadHash;  // quirk: Robust Caching, see the top of the file
       gatt_client_read_value_of_characteristics_by_uuid16(
           &gatt_trampoline, con_handle_, 0x0001, 0xffff, 0x2B2A);
@@ -474,6 +498,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
       bd_addr_t id;
       sm_event_identity_resolving_succeeded_get_identity_address(packet, id);
       printf("SM resolved RPA -> %s\n", bd_addr_to_str(id));
+      memcpy(paired_identity_, id, 6);  // --pair: the picked device is already bonded
       break;
     }
     case SM_EVENT_IDENTITY_RESOLVING_FAILED:
@@ -483,9 +508,49 @@ void BleLink::on_hci_event(uint8_t* packet) {
       // bad sign: SM did not find the LTK and pairs from scratch
       printf("!!! new pairing started: bond not used\n");
       break;
-    case SM_EVENT_REENCRYPTION_COMPLETE:
-      printf("re-encryption status 0x%02x\n", sm_event_reencryption_complete_get_status(packet));
+    case SM_EVENT_REENCRYPTION_COMPLETE: {
+      uint8_t st = sm_event_reencryption_complete_get_status(packet);
+      printf("re-encryption status 0x%02x\n", st);
+      // --pair with a device that is already bonded: SM re-encrypts with the
+      // stored LTK, no PAIRING_COMPLETE follows. Use that bond; comes before
+      // HCI_EVENT_ENCRYPTION_CHANGE (SM's handler runs first), which then
+      // goes on to ReadHash as for a bonded start
+      if (st != ERROR_CODE_SUCCESS || !spec_.pair || stopping_)
+        break;
+      if (!bond_store_find(paired_identity_, bond_)) {
+        fail("bond after re-encryption", 0);
+        break;
+      }
+      printf("already bonded with %s, using the stored bond\n", bd_addr_to_str(bond_.identity));
+      spec_.pair = false;
       break;
+    }
+    // --- pairing (--pair): SC Just Works, the aid has no IO ---
+    case SM_EVENT_JUST_WORKS_REQUEST:
+      sm_just_works_confirm(sm_event_just_works_request_get_handle(packet));
+      break;
+    case SM_EVENT_IDENTITY_CREATED:
+      sm_event_identity_created_get_identity_address(packet, paired_identity_);
+      break;
+    case SM_EVENT_PAIRING_COMPLETE: {
+      uint8_t st = sm_event_pairing_complete_get_status(packet);
+      if (st != ERROR_CODE_SUCCESS) {
+        printf("pairing reason 0x%02x\n", sm_event_pairing_complete_get_reason(packet));
+        fail("pairing", st);
+        break;
+      }
+      if (!spec_.pair || stopping_ || state_ != State::Connected)
+        break;
+      if (!bond_store_find(paired_identity_, bond_)) {
+        fail("bond after pairing", 0);
+        break;
+      }
+      spec_.pair = false;  // reconnect() goes the IRK path from now on
+      state_ = State::ReadHash;
+      gatt_client_read_value_of_characteristics_by_uuid16(
+          &gatt_trampoline, con_handle_, 0x0001, 0xffff, 0x2B2A);
+      break;
+    }
     default:
       break;
   }

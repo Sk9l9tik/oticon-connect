@@ -78,7 +78,7 @@ static void open_tlv(const bd_addr_t adapter) {
 // aid. None left: rescan every RESCAN_MS until one is plugged in.
 // ---------------------------------------------------------------------------
 
-static const uint32_t RESCAN_MS = 2000;
+static const uint32_t RESCAN_MS = 1000;
 static const uint32_t INIT_TIMEOUT_MS = 10000;  // power on -> HCI_STATE_WORKING
 
 static UsbAdapter usb_filter;  // --usb: only this one
@@ -255,6 +255,7 @@ struct Options {
   std::string log = "app.btsnoop";            // HCI trace, readable by btmon -r
   int tone_hz = 0;        // > 0: endless sine encoded on the fly instead of the file
   bool pipewire = false;  // audio from the PipeWire sink instead of the file
+  bool pair = false;      // new bonding with an aid in pairing mode
   int volume = -50;       // ASHA volume, -128 (mute) .. 0 (max)
 };
 
@@ -263,6 +264,8 @@ static void usage(const char* name) {
       "usage: %s [options]\n"
       "  -b, --bond PATH     import a BlueZ bond (/var/lib/bluetooth/<adapter>/<aid>/info);\n"
       "                      without it the bond saved by an earlier import is used\n"
+      "  -r, --pair          pair with an aid in pairing mode (restart it first), the bond\n"
+      "                      is stored for this adapter; not with --bond\n"
       "  -P, --peer ADDR     aid identity address: picks a stored bond, or names the aid\n"
       "                      of a --bond file copied out of its BlueZ directory\n"
       "  -u, --usb PATH      only the adapter at USB ports [bus-]port[.port...], as printed\n"
@@ -280,14 +283,20 @@ static void usage(const char* name) {
 // Returns false on a bad option; the caller prints usage and exits
 static bool parse_options(int argc, char** argv, Options& opt) {
   static const option long_options[] = {
-      {"bond", required_argument, nullptr, 'b'},   {"peer", required_argument, nullptr, 'P'},
-      {"usb", required_argument, nullptr, 'u'},    {"audio", required_argument, nullptr, 'a'},
-      {"volume", required_argument, nullptr, 'v'}, {"log", required_argument, nullptr, 'l'},
-      {"help", no_argument, nullptr, 'h'},         {"tone", required_argument, nullptr, 't'},
-      {"pipewire", no_argument, nullptr, 'p'},     {nullptr, 0, nullptr, 0}};
+      {"bond", required_argument, nullptr, 'b'},
+      {"peer", required_argument, nullptr, 'P'},
+      {"usb", required_argument, nullptr, 'u'},
+      {"audio", required_argument, nullptr, 'a'},
+      {"volume", required_argument, nullptr, 'v'},
+      {"log", required_argument, nullptr, 'l'},
+      {"help", no_argument, nullptr, 'h'},
+      {"tone", required_argument, nullptr, 't'},
+      {"pipewire", no_argument, nullptr, 'p'},
+      {"pair", no_argument, nullptr, 'r'},
+      {nullptr, 0, nullptr, 0}};
 
   int c;
-  while ((c = getopt_long(argc, argv, "b:P:u:a:v:l:t:ph", long_options, nullptr)) != -1) {
+  while ((c = getopt_long(argc, argv, "b:P:u:a:v:l:t:prh", long_options, nullptr)) != -1) {
     switch (c) {
       case 'b':
         opt.bond = optarg;
@@ -327,12 +336,19 @@ static bool parse_options(int argc, char** argv, Options& opt) {
       case 'p':
         opt.pipewire = true;
         break;
+      case 'r':
+        opt.pair = true;
+        break;
       default:  // 'h' and '?' (getopt already printed the error)
         return false;
     }
   }
   if (opt.pipewire && opt.tone_hz > 0) {
     std::fprintf(stderr, "--tone and --pipewire: pick one\n");
+    return false;
+  }
+  if (opt.pair && !opt.bond.empty()) {
+    std::fprintf(stderr, "--pair and --bond: pick one\n");
     return false;
   }
   if (optind < argc) {
@@ -438,6 +454,7 @@ int main(int argc, char** argv) {
   AppConfig cfg{
       .bond = opt.bond.empty() ? nullptr : opt.bond.c_str(),
       .peer = opt.peer.empty() ? nullptr : opt.peer.c_str(),
+      .pair = opt.pair,
       .audio = opt.audio.c_str(),
       .tone_hz = opt.tone_hz,
       .pipewire = opt.pipewire,

@@ -49,6 +49,7 @@ add_library(ble STATIC
     src/ble/ble_link.cc
     src/ble/bond_parser.cc
     src/ble/bond_store.cc
+    src/ble/device_picker.cc
 )
 target_include_directories(ble PUBLIC ${SRC})
 target_link_libraries(ble PUBLIC btstack)

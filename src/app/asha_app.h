@@ -7,6 +7,7 @@ struct AppConfig {
   const char* bond;                   // BlueZ bond file to import, nullptr: use a stored bond
   const char* peer;                   // identity address of the aid, nullptr: from the bond
                                       // file path, or the only stored bond
+  bool pair;                          // pair anew with an aid in pairing mode (no bond)
   const char* audio;                  // G.722 file; ignored when tone_hz > 0
   int tone_hz;                        // > 0: endless sine encoded on the fly instead of the file
   bool pipewire;                      // audio from the PipeWire sink "Oticon ASHA"
