@@ -18,8 +18,9 @@ its firmware hangs on scan-off while connected and has no LL Privacy.
 
 ## Status
 
-Works: connect with an existing bond, ASHA setup, streaming from all three
-sources, clean shutdown on Ctrl+C. One aid only, no binaural streaming yet.
+Works: pairing (`--pair`) or importing a BlueZ bond, ASHA setup, streaming from
+all three sources, reconnect after the link drops, clean shutdown on Ctrl+C.
+One aid only, no binaural streaming yet.
 See [Limitations](#limitations) and `.todo.md`.
 
 ## Requirements
@@ -71,19 +72,41 @@ it (other Bluetooth devices on it disconnect); on exit it is given back.
 Without `--usb`, every Bluetooth controller on USB is a candidate: external
 (removable) ones first, then built-in. They are tried one at a time, and one
 is skipped when it can't be opened, its init hangs, or it has no bond for the
-aid. When none is usable, `asha_probe` waits and rescans every 2 s, so a dongle
+aid. When none is usable, `asha_probe` waits and rescans every second, so a dongle
 can be plugged in later. A skipped adapter is tried again after a replug.
+With `--pair` no bond is needed, so the first adapter that comes up is used;
+pick another one with `--usb`.
 Controllers on UART/SDIO (some laptops, ARM boards) are not reachable.
 
 ## Bond (one-time setup)
 
-`asha_probe` does not pair yet: it reuses a bond made by BlueZ **with the same
-dongle**. The aid keys the bond to the dongle's address, so a bond made with
-another adapter does not work. Each adapter needs its own bond (the aid keeps
-several); import one per adapter you want to use.
+The aid keys a bond to the adapter's address, so each adapter needs its own bond
+(the aid keeps several). Make one per adapter you want to use, either way below.
 
-1. Pair the aid with BlueZ on this dongle (`bluetoothctl`, then `pair <aid address>`).
-   The aid must be in pairing mode, usually right after it is powered on.
+### Pair with `asha_probe`
+
+1. Put the aid into pairing mode, usually by restarting it (into the charger and
+   out, or off and on).
+2. Run with `--pair` and a source:
+
+   ```sh
+   ./build/asha_probe --pair --tone 1000
+   ```
+
+   It scans actively and lists connectable devices as they show up, numbered,
+   with address, RSSI and name; ASHA devices are marked `<- ASHA`. Type the
+   number + Enter. Pairing is LE Secure Connections, Just Works (the aid has no
+   input). Once paired, it goes on to stream as usual.
+
+If the picked aid is already bonded with this adapter, the stored bond is used
+and no new pairing happens.
+
+### Or import a BlueZ bond
+
+A bond made by BlueZ works only **with the same adapter**.
+
+1. Pair the aid with BlueZ on this adapter (`bluetoothctl`, then `pair <aid address>`).
+   The aid must be in pairing mode.
 2. Copy the bond file (readable by root only):
 
    ```sh
@@ -103,8 +126,10 @@ several); import one per adapter you want to use.
    Read in place (`--bond /var/lib/bluetooth/<adapter>/<aid>/info`, as root),
    it is imported only into that adapter.
 
+### Stored bonds
+
 The bond is now stored in `~/.local/state/oticon-connect/btstack_<adapter>.tlv`
-(one file per adapter, mode 0600); later runs need no `--bond`.
+(one file per adapter, mode 0600); later runs need neither `--pair` nor `--bond`.
 
 `bond/info` and the TLV file contain the link keys: keep them private.
 
@@ -131,10 +156,15 @@ PipeWire converts whatever is played to 16 kHz mono.
 | `-t`, `--tone HZ` | endless sine, 1..7999 Hz |
 | `-a`, `--audio PATH` | raw G.722 file, 160-byte frames (default `assets/tone_1k.g722`) |
 | `-v`, `--volume N` | ASHA volume −128 (mute) .. 0 (max), default −50 |
+| `-r`, `--pair` | pair with an aid in pairing mode, chosen from a list on stdin; not with `--bond` |
 | `-b`, `--bond PATH` | import a BlueZ bond file |
 | `-P`, `--peer ADDR` | aid identity address: picks a stored bond, or names the aid of a copied `--bond` file |
 | `-u`, `--usb PATH` | use only the adapter at these USB ports (`5`, or `1-2.3` as in `/sys/bus/usb/devices`); default: any Bluetooth adapter on USB, see [Which adapter](#which-adapter). The ports are printed at start |
 | `-l`, `--log PATH` | HCI trace, default `app.btsnoop` |
+
+When the link drops (aid out of range, put into the charger), `asha_probe`
+scans and reconnects on its own, retrying after 1, 2, 4 … up to 30 s; the delay
+goes back to 1 s once streaming resumes.
 
 Ctrl+C stops cleanly: ASHA Stop, disconnect, power off. A second Ctrl+C exits
 at once; the dongle may then need replugging.
@@ -170,7 +200,10 @@ tone / file ──────────────────────�
 
 1. **BleLink:** passive scan; an advertisement whose resolvable private address
    matches the bond's IRK is the aid. Stop scanning, connect, wait 300 ms,
-   re-encrypt with the stored LTK, read the GATT Database Hash.
+   re-encrypt with the stored LTK, read the GATT Database Hash. With `--pair`
+   the scan is active and `DevicePicker` lists advertisers; the picked one is
+   connected and paired (SC Just Works), the new bond goes to the TLV.
+   On a drop, `AshaSession` calls `reconnect()` with exponential backoff.
 2. **AshaSession:** find service `0xFDF0` and its characteristics, read
    ReadOnlyProperties and the audio PSM, subscribe to AudioStatus, set a 20 ms
    connection interval, open the L2CAP credit-based channel, write Start
@@ -192,8 +225,8 @@ encryption, Database Hash first) are documented at the top of
 
 | Path | Contents |
 |---|---|
-| `src/app/` | `main.cc`: options, signals (signalfd in the run loop), BTstack init, TLV; `asha_probe.cc`: glue |
-| `src/ble/` | `BleLink`, BlueZ bond parser, bond store (BTstack device DB), run loop `Timer` |
+| `src/app/` | `main.cc`: options, signals (signalfd in the run loop), BTstack init, TLV, adapter rotation; `usb_adapters.cc`: USB Bluetooth controller enumeration; `asha_probe.cc`: glue |
+| `src/ble/` | `BleLink`, `DevicePicker` (`--pair` list, stdin), BlueZ bond parser, bond store (BTstack device DB), run loop `Timer` |
 | `src/asha/` | `AshaSession` (protocol), `AudioStream` (frame clock and queue) |
 | `src/audio/` | frame sources, `G722Encoder`, `SampleRing`, `PwSink`, `PipeWireSource` |
 | `tools/`, `tests/` | helper programs, ring buffer test |
@@ -206,8 +239,9 @@ encryption, Database Hash first) are documented at the top of
   after a disconnect. Restart it (into the charger and out). A phone connected
   to the aid may keep it busy.
 - **`no stored bond, import one with --bond`:** do the [bond setup](#bond-one-time-setup).
+- **The aid is not in the `--pair` list:** it is not in pairing mode; restart it.
 - **`!!! new pairing started: bond not used`:** the stored keys don't match this
-  aid or adapter; re-pair with BlueZ and import again.
+  aid or adapter; pair again with `--pair` (or BlueZ + `--bond`).
 - **Startup hangs after an unclean exit:** the controller was left scanning and
   ignores HCI Reset. Replug the dongle.
 - **Dropouts, `dropped` grows in bursts:** frames are lost on air. The usual
@@ -219,9 +253,7 @@ encryption, Database Hash first) are documented at the top of
 ## Limitations
 
 - One aid; no binaural (left + right) streaming.
-- No pairing of its own: needs a bond made by BlueZ with the same dongle.
 - Volume only at start (`--volume`).
-- No reconnect after the link drops.
 - Only Realtek dongles get their chipset driver; BTstack does not upload firmware
   for `0bda:a728`, it runs what the kernel loaded.
 
