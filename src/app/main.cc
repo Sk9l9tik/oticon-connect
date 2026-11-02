@@ -232,7 +232,7 @@ static void main_hci_handler(
       if (!have_current)
         break;
       std::printf(
-          "adapter %s: can't open it (no access? needs a udev rule, see README)\n",
+          "adapter %s: can't open it (no access? run tools/install-udev-rules.sh)\n",
           current.path().c_str());
       rejected.push_back(current);
       reattach_kernel_driver(current);

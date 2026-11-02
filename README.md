@@ -51,18 +51,23 @@ Binaries: `build/asha_probe`, `build/g722_gen`, `build/pw_capture`.
 ## USB access
 
 BTstack takes the adapter over from the kernel driver. To run without root,
-give your user access to it with a udev rule. This one covers every USB
-Bluetooth controller, dongles and laptops' built-in adapters alike:
+give your user access to it with a udev rule. It covers every USB Bluetooth
+controller, dongles and laptops' built-in adapters alike. Install it once:
 
 ```sh
-echo 'SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{bDeviceClass}=="e0", MODE="0660", TAG+="uaccess"' \
-  | sudo tee /etc/udev/rules.d/70-oticon-asha-adapters.rules
-sudo udevadm control --reload && sudo udevadm trigger
+tools/install-udev-rules.sh
 ```
 
+No logout or replug is needed. Without the rule, `asha_probe` reports
+`can't open it (no access? ...)` and libusb logs `errno=13`.
+
+The rule grants access to the user at the active local session only, so it does
+not apply over SSH.
+
 A few adapters report the Bluetooth class only on their interface (device class
-`00`/`ef`); for those add a rule by ID, e.g.
-`SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="a728", MODE="0660", TAG+="uaccess"`.
+`00`/`ef`). If yours is one of them, add a line by ID to
+`tools/70-oticon-asha-adapters.rules`, next to the one for `0bda:a728`, and run
+the script again.
 
 Only one process can hold an adapter. While `asha_probe` uses it, BlueZ loses
 it (other Bluetooth devices on it disconnect); on exit it is given back.

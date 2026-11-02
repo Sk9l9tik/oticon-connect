@@ -1,0 +1,8 @@
+# Lets the logged-in user open USB Bluetooth controllers for asha_probe.
+# Installed by tools/install-udev-rules.sh.
+
+# Controllers that report the Bluetooth class on the device: dongles, built-in adapters.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{bDeviceClass}=="e0", MODE="0660", TAG+="uaccess"
+
+# Controllers that report it only on their interface need a rule by ID.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0bda", ATTR{idProduct}=="a728", MODE="0660", TAG+="uaccess"
