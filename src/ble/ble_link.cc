@@ -476,8 +476,11 @@ void BleLink::on_hci_event(uint8_t* packet) {
       break;
     }
 
-    case HCI_EVENT_ENCRYPTION_CHANGE: {
-      // controller confirms the link is encrypted: GATT reads are allowed now
+    case HCI_EVENT_ENCRYPTION_CHANGE:
+    case HCI_EVENT_ENCRYPTION_CHANGE_V2: {
+      // controller confirms the link is encrypted: GATT reads are allowed now.
+      // BTstack enables v2, controllers that support it (Intel 8087:0033) send
+      // only v2. Same layout up to encryption_enabled, v1 getters read both
       uint8_t status = hci_event_encryption_change_get_status(packet);
       uint8_t enabled = hci_event_encryption_change_get_encryption_enabled(packet);
       printf("encryption change: status 0x%02x, enabled %u\n", status, enabled);
