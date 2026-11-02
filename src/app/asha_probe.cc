@@ -17,9 +17,12 @@
 #include <utility>
 
 #include "app/asha_app.h"
+
 #include "asha/asha_session.h"
+
 #include "audio/frame_source.h"
 #include "audio/pipewire_source.h"
+
 #include "ble/bond_parser.h"
 
 static const double TONE_AMPLITUDE = 0.15;
