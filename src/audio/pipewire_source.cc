@@ -8,6 +8,14 @@ bool PipeWireSource::next(std::span<uint8_t, G722_FRAME_BYTES> out) {
   SampleRing& ring = sink_.ring();
   size_t fill = ring.size();
 
+  uint64_t signal_generation = sink_.signal_generation();
+  if (signal_generation != last_signal_generation_) {
+    last_signal_generation_ = signal_generation;
+    silent_frames_ = 0;
+  } else if (silent_frames_ < IDLE_FRAMES) {
+    silent_frames_++;
+  }
+
   if (fill > HIGH_WATER) {
     ring.skip(fill - TARGET);
     skipped_ += fill - TARGET;

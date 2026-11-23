@@ -120,6 +120,13 @@ void BleLink::reconnect() {
   start_scan();  // bond_ already picked, no pick_bond(); --pair: pick again
 }
 
+void BleLink::recover() {
+  if (stopping_ || down_ || con_handle_ == HCI_CON_HANDLE_INVALID)
+    return;
+  printf("recovering stalled audio link\n");
+  gap_disconnect(con_handle_);
+}
+
 // Bonded: passive (0), interval = window = 0x30 x 0.625 ms: listen all the time.
 // --pair: active (1), the name and the ASHA data may be only in the scan response
 void BleLink::start_scan() {
@@ -240,9 +247,9 @@ void BleLink::subscribe(uint16_t value_handle, Done done) {
 }
 
 // Result comes as HCI_SUBEVENT_LE_CONNECTION_UPDATE_COMPLETE
-void BleLink::set_connection_interval(uint16_t interval, Done done) {
+void BleLink::set_connection_parameters(uint16_t interval, uint16_t latency, Done done) {
   on_conn_update_ = std::move(done);
-  gap_update_connection_parameters(con_handle_, interval, interval, 0, 200);
+  gap_update_connection_parameters(con_handle_, interval, interval, latency, 200);
 }
 
 void BleLink::gatt_trampoline(uint8_t type, uint16_t, uint8_t* packet, uint16_t) {
@@ -333,8 +340,11 @@ void BleLink::request_can_send() {
   l2cap_request_can_send_now_event(coc_cid_);
 }
 
-void BleLink::send(std::span<const uint8_t> sdu) {
-  l2cap_send(coc_cid_, const_cast<uint8_t*>(sdu.data()), (uint16_t)sdu.size());
+bool BleLink::send(std::span<const uint8_t> sdu) {
+  uint8_t status = l2cap_send(coc_cid_, sdu.data(), (uint16_t)sdu.size());
+  if (status != ERROR_CODE_SUCCESS)
+    printf("L2CAP send failed 0x%02x\n", status);
+  return status == ERROR_CODE_SUCCESS;
 }
 
 void BleLink::coc_trampoline(uint8_t type, uint16_t, uint8_t* packet, uint16_t) {

@@ -3,13 +3,21 @@
 
 #include "asha/audio_stream.h"
 
-AudioStream::AudioStream(FrameSource& source, BleLink& link, std::function<void()> on_end)
-    : source_(source), link_(link), on_end_(std::move(on_end)), timer_([this] { on_tick(); }) {
+AudioStream::AudioStream(
+    FrameSource& source, BleLink& link, std::function<void()> on_end,
+    std::function<void()> on_idle, std::function<void()> on_stall)
+    : source_(source), link_(link), on_end_(std::move(on_end)), on_idle_(std::move(on_idle)),
+      on_stall_(std::move(on_stall)), timer_([this] { on_tick(); }) {
 }
 
 void AudioStream::start() {
   printf("streaming %s\n", source_.describe().c_str());
+  source_.restart_stream();
   next_deadline_ms_ = btstack_run_loop_get_time_ms();
+  last_send_ms_ = next_deadline_ms_;
+  sequence_ = 0;  // ASHA requires packet 0 after every Start
+  running_ = true;
+  congested_ = false;
   // after a reconnect: SDUs left from the old link must not go out
   head_ = 0;
   tail_ = 0;
@@ -18,7 +26,11 @@ void AudioStream::start() {
 }
 
 void AudioStream::stop() {
+  bool was_running = running_;
+  running_ = false;
   timer_.cancel();
+  if (!was_running)
+    return;
   printf("done: %zu frames, sent %u, dropped %u\n", frames_, sent_, dropped_);
 }
 
@@ -30,19 +42,35 @@ void AudioStream::on_tick() {
     on_end_();
     return;
   }
+  if (source_.suspend_requested()) {
+    on_idle_();
+    return;
+  }
   if (queued_ >= MAX_QUEUED) {
     // the link is behind: drop the oldest unsent frame (not the one in
     // flight: that one is at head_ - 1, already out of the queue)
     head_ = (head_ + 1) % RING;
     queued_--;
     dropped_++;
+    uint32_t now = btstack_run_loop_get_time_ms();
+    if (!congested_) {
+      congested_ = true;
+      congestion_since_ms_ = now;
+    }
+    if ((uint32_t)(now - last_send_ms_) >= STALL_TIMEOUT_MS ||
+        (uint32_t)(now - congestion_since_ms_) >= STALL_TIMEOUT_MS) {
+      printf("audio channel stalled for %u ms; reconnecting\n", STALL_TIMEOUT_MS);
+      running_ = false;
+      on_stall_();
+      return;
+    }
   }
-  ring_[tail_][0] = (uint8_t)frames_;  // seq wraps after 255
+  ring_[tail_][0] = sequence_++;
   memcpy(&ring_[tail_][1], frame, G722_FRAME_BYTES);
   tail_ = (tail_ + 1) % RING;
   queued_++;
   link_.request_can_send();
-  frames_++;  // seq advances for dropped frames too, as in asha_test.py
+  frames_++;  // source/statistics advance even when an older queued frame was dropped
   if (frames_ % 50 == 0)
     printf(
         "  t=%4.1fs queued %u sent %u dropped %u\n", frames_ * FRAME_MS / 1000.0, queued_, sent_,
@@ -56,12 +84,20 @@ void AudioStream::on_tick() {
 
 // The previous SDU went out and the aid gave credits: send one frame
 void AudioStream::on_can_send() {
-  if (queued_ == 0)
+  if (!running_ || queued_ == 0)
     return;
-  link_.send(ring_[head_]);
+  memcpy(in_flight_, ring_[head_], sizeof(in_flight_));
+  if (!link_.send(in_flight_)) {
+    running_ = false;
+    on_stall_();
+    return;
+  }
   head_ = (head_ + 1) % RING;
   queued_--;
   sent_++;
+  last_send_ms_ = btstack_run_loop_get_time_ms();
+  if (queued_ == 0)
+    congested_ = false;
   if (queued_ > 0)
     link_.request_can_send();
 }

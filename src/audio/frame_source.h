@@ -17,6 +17,15 @@ public:
   virtual ~FrameSource() = default;
   virtual bool next(std::span<uint8_t, G722_FRAME_BYTES> out) = 0;  // false: end of stream
   virtual std::string describe() const = 0;                         // for the log
+
+  // ASHA resets its decoder on every Start. Sources which encode PCM must
+  // reset the matching encoder state as well.
+  virtual void restart_stream() {}
+
+  // Live sources may ask ASHA to stop during a long idle period. While the
+  // stream is stopped, resume_requested() is polled without consuming audio.
+  virtual bool suspend_requested() const { return false; }
+  virtual bool resume_requested() const { return false; }
 };
 
 // Raw G.722 file (frames back to back); a trailing partial frame is ignored
@@ -39,6 +48,7 @@ public:
   }
   bool next(std::span<uint8_t, G722_FRAME_BYTES> out) override;
   std::string describe() const override;
+  void restart_stream() override { encoder_.reset(); }
 
 private:
   int freq_hz_;

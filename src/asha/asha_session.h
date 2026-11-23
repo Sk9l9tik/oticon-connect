@@ -31,6 +31,8 @@ private:
     Setup,      // link not ready yet, or the GATT / CoC chain is running
     Starting,   // Start written, waiting for AudioStatus
     Streaming,  // frame clock running
+    Pausing,    // idle Stop written, waiting for AudioStatus
+    Paused,     // connected at low duty cycle, waiting for source activity
     Stopping,   // Stop written or link shutting down
   };
 
@@ -50,6 +52,11 @@ private:
   void update_interval();
   void open_coc();
   void write_start();
+  void pause_stream();
+  void enter_idle();
+  void on_idle_timer();
+  void poll_resume();
+  void recover_stream();
 
   void fail_setup(const char* what);  // setup step failed: shut the link down
 
@@ -58,6 +65,7 @@ private:
   std::function<void()> on_finished_;
   std::function<void()> on_no_bond_;
   Timer stop_timer_;  // the aid does not confirm Stop: shut down anyway
+  Timer idle_timer_{[this] { on_idle_timer(); }};
 
   State state_ = State::Setup;
   bool stopping_ = false;

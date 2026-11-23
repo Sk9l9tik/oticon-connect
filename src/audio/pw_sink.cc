@@ -73,6 +73,13 @@ void PwSink::on_process(void* userdata) {
   if (d.data && d.chunk) {
     auto* s = static_cast<const int16_t*>(SPA_PTROFF(d.data, d.chunk->offset, void));
     size_t n = d.chunk->size / sizeof(int16_t);
+    constexpr int16_t SIGNAL_THRESHOLD = 8;
+    for (size_t i = 0; i < n; ++i) {
+      if (s[i] > SIGNAL_THRESHOLD || s[i] < -SIGNAL_THRESHOLD) {
+        self->signal_generation_.fetch_add(1, std::memory_order_relaxed);
+        break;
+      }
+    }
     size_t w = self->ring_.write(s, n);
     if (w < n)
       self->overflows_.fetch_add(n - w, std::memory_order_relaxed);

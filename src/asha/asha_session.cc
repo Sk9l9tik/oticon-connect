@@ -18,6 +18,10 @@ static const char* UUID_VOLUME = "00e4ca9e-ab14-41e4-8823-f9e70c7e91df";
 static const char* UUID_PSM = "2d410339-82b6-42aa-b34e-e2e01df8cc1a";
 
 static const uint16_t INTERVAL_20MS = 16;  // x 1.25 ms: one audio frame per connection event
+static const uint16_t IDLE_INTERVAL = 80;  // 100 ms
+static const uint16_t IDLE_LATENCY = 4;    // aid may wake only every 500 ms
+static const uint32_t IDLE_POLL_MS = 250;
+static const uint32_t IDLE_STOP_TIMEOUT_MS = 2000;
 static const uint32_t STOP_TIMEOUT_MS = 2000;
 
 // ReadOnlyProperties, 17 bytes, layout in CPP_GUIDE.md
@@ -39,7 +43,10 @@ static void print_rop(std::span<const uint8_t> v) {
 AshaSession::AshaSession(
     BondSpec bond, FrameSource& source, int volume, std::function<void()> on_finished,
     std::function<void()> on_no_bond)
-    : link_(std::move(bond), *this), stream_(source, link_, [this] { stop(); }),
+    : link_(std::move(bond), *this),
+      stream_(
+          source, link_, [this] { stop(); }, [this] { pause_stream(); },
+          [this] { recover_stream(); }),
       on_finished_(std::move(on_finished)), on_no_bond_(std::move(on_no_bond)), stop_timer_([this] {
         printf("no answer to Stop\n");
         link_.shutdown();
@@ -58,6 +65,7 @@ void AshaSession::stop() {
     return;
   stopping_ = true;
   retry_timer_.cancel();  // Ctrl+C during the backoff
+  idle_timer_.cancel();
   bool streaming = state_ == State::Streaming;
   state_ = State::Stopping;
   if (!streaming) {
@@ -140,12 +148,78 @@ void AshaSession::subscribe_status() {
 }
 
 void AshaSession::update_interval() {
-  link_.set_connection_interval(INTERVAL_20MS, [this](bool ok) {
+  link_.set_connection_parameters(INTERVAL_20MS, 0, [this](bool ok) {
     // a rejected update is not fatal: the stream may still fit the old interval
     if (!ok)
       printf("warning: connection interval not changed\n");
     open_coc();
   });
+}
+
+// A PipeWire source has been silent for long enough to stop the radio stream.
+// Keep the encrypted GATT/CoC connection: ASHA explicitly permits a slower,
+// higher-latency connection after Stop and requires a fresh Start on resume.
+void AshaSession::pause_stream() {
+  if (stopping_ || state_ != State::Streaming)
+    return;
+  stream_.stop();
+  state_ = State::Pausing;
+  idle_timer_.start(IDLE_STOP_TIMEOUT_MS);
+  static const uint8_t acp_stop[] = {0x02};
+  link_.write(acp_, acp_stop, [this](bool ok) {
+    if (!ok && !stopping_)
+      recover_stream();
+  });
+}
+
+void AshaSession::enter_idle() {
+  if (stopping_ || state_ != State::Pausing)
+    return;
+  idle_timer_.cancel();
+  state_ = State::Paused;
+  link_.set_connection_parameters(IDLE_INTERVAL, IDLE_LATENCY, [this](bool ok) {
+    if (!ok)
+      printf("warning: low-power connection parameters rejected\n");
+    if (!stopping_ && state_ == State::Paused) {
+      printf("stream idle; waiting for PipeWire audio\n");
+      idle_timer_.start(IDLE_POLL_MS);
+    }
+  });
+}
+
+void AshaSession::on_idle_timer() {
+  if (state_ == State::Pausing) {
+    printf("no answer to idle Stop; reconnecting\n");
+    recover_stream();
+  } else {
+    poll_resume();
+  }
+}
+
+void AshaSession::poll_resume() {
+  if (stopping_ || state_ != State::Paused)
+    return;
+  if (!stream_.resume_requested()) {
+    idle_timer_.start(IDLE_POLL_MS);
+    return;
+  }
+  printf("PipeWire audio resumed\n");
+  state_ = State::Setup;
+  link_.set_connection_parameters(INTERVAL_20MS, 0, [this](bool ok) {
+    if (!ok)
+      printf("warning: streaming connection interval not restored\n");
+    if (!stopping_ && state_ == State::Setup)
+      write_start();
+  });
+}
+
+void AshaSession::recover_stream() {
+  if (stopping_)
+    return;
+  idle_timer_.cancel();
+  if (state_ == State::Streaming)
+    stream_.stop();
+  link_.recover();
 }
 
 void AshaSession::open_coc() {
@@ -178,13 +252,22 @@ void AshaSession::on_notification(uint16_t value_handle, std::span<const uint8_t
     return;
   int8_t audio_status = (int8_t)value[0];
   printf("AudioStatus %d\n", audio_status);
-  if (stopping_ || state_ != State::Starting)
+  if (stopping_)
     return;
-  if (audio_status != 0)
-    return fail_setup("Start (aid rejected it)");
-  state_ = State::Streaming;
-  backoff_ms_ = 1000;
-  stream_.start();
+  if (state_ == State::Starting) {
+    if (audio_status != 0)
+      return fail_setup("Start (aid rejected it)");
+    state_ = State::Streaming;
+    backoff_ms_ = 1000;
+    stream_.start();
+  } else if (state_ == State::Pausing) {
+    if (audio_status != 0) {
+      printf("idle Stop rejected; reconnecting\n");
+      recover_stream();
+      return;
+    }
+    enter_idle();
+  }
 }
 
 void AshaSession::on_coc_can_send() {
@@ -204,6 +287,7 @@ void AshaSession::on_link_down() {
   state_ = State::Stopping;
   stopping_ = true;
   stop_timer_.cancel();
+  idle_timer_.cancel();
   retry_timer_.cancel();
   if (on_finished_)
     on_finished_();
@@ -219,6 +303,7 @@ void AshaSession::on_link_lost(uint8_t reason) {
   }
 
   stop_timer_.cancel();
+  idle_timer_.cancel();
   state_ = State::Setup;
   psm_ = rop_ = acp_ = status_ = volume_chr_ = psm_chr_ = 0;
   printf("link lost 0x%02x, retry in %u ms\n", reason, backoff_ms_);

@@ -21,6 +21,7 @@
 #include "btstack_tlv.h"
 #include "btstack_tlv_posix.h"
 #include "hci.h"
+#include "hci_cmd.h"
 #include "hci_dump.h"
 #include "hci_dump_posix_fs.h"
 #include "hci_transport.h"
@@ -28,6 +29,7 @@
 
 #include "app/asha_app.h"
 #include "app/usb_adapters.h"
+#include "app/wifi_avoidance.h"
 
 #include "ble/le_device_db_tlv.h"
 #include "ble/timer.h"
@@ -88,6 +90,8 @@ static UsbAdapter current;                // powered on, or being powered on
 static bool have_current = false;
 static bool finishing = false;  // the app is done: power off and leave
 static bool told_waiting = false;
+static bool avoid_wifi = false;
+static BleChannelMap wifi_channel_map;
 
 static bool listed(const std::vector<UsbAdapter>& v, const UsbAdapter& a) {
   return std::any_of(v.begin(), v.end(), [&](const UsbAdapter& x) { return x.same_place(a); });
@@ -195,7 +199,13 @@ static void main_hci_handler(
     // HCI_STATE_WORKING, where SM loads its keys from the TLV (SM's handler
     // runs before ours, so opening it on WORKING would be too late).
     case HCI_EVENT_COMMAND_COMPLETE: {
-      if (hci_event_command_complete_get_command_opcode(packet) != HCI_OPCODE_HCI_READ_BD_ADDR)
+      uint16_t opcode = hci_event_command_complete_get_command_opcode(packet);
+      if (opcode == HCI_OPCODE_HCI_LE_SET_HOST_CHANNEL_CLASSIFICATION) {
+        const uint8_t* ret = hci_event_command_complete_get_return_parameters(packet);
+        std::printf("BLE channel classification: status 0x%02x\n", ret[0]);
+        break;
+      }
+      if (opcode != HCI_OPCODE_HCI_READ_BD_ADDR)
         break;
       const uint8_t* ret = hci_event_command_complete_get_return_parameters(packet);
       if (ret[0] != ERROR_CODE_SUCCESS)
@@ -209,6 +219,16 @@ static void main_hci_handler(
       switch (btstack_event_state_get_state(packet)) {
         case HCI_STATE_WORKING:
           init_timer.cancel();
+          if (avoid_wifi) {
+            std::printf(
+                "BLE channel map: %u/37 data channels enabled (Wi-Fi avoidance)\n",
+                wifi_channel_map.usable);
+            uint8_t status = hci_send_cmd(
+                &hci_le_set_host_channel_classification, wifi_channel_map.lower,
+                wifi_channel_map.upper);
+            if (status != ERROR_CODE_SUCCESS)
+              std::printf("could not queue BLE channel classification: 0x%02x\n", status);
+          }
           break;
         // Power off done: dropped adapter, our shutdown or a fatal error.
         // Give the adapter back to the kernel, then the next one or leave
@@ -253,6 +273,7 @@ struct Options {
   std::string usb;                            // adapter by USB path "bus-port.port"
   std::string audio = "assets/tone_1k.g722";  // raw G.722 frames, 160 bytes each
   std::string log = "app.btsnoop";            // HCI trace, readable by btmon -r
+  std::string avoid_wifi;                     // 2.4 GHz Wi-Fi channels to avoid
   int tone_hz = 0;        // > 0: endless sine encoded on the fly instead of the file
   bool pipewire = false;  // audio from the PipeWire sink instead of the file
   bool pair = false;      // new bonding with an aid in pairing mode
@@ -276,6 +297,7 @@ static void usage(const char* name) {
       "  -t, --tone HZ       endless sine 1..7999 Hz instead of the file\n"
       "  -p, --pipewire      play what apps send to the PipeWire sink \"Oticon ASHA\"\n"
       "  -l, --log PATH      HCI trace, btsnoop format (default app.btsnoop)\n"
+      "  -W, --avoid-wifi N  avoid 2.4 GHz Wi-Fi channels 1..13 (comma-separated)\n"
       "  -h, --help          this help\n",
       name);
 }
@@ -289,6 +311,7 @@ static bool parse_options(int argc, char** argv, Options& opt) {
       {"audio", required_argument, nullptr, 'a'},
       {"volume", required_argument, nullptr, 'v'},
       {"log", required_argument, nullptr, 'l'},
+      {"avoid-wifi", required_argument, nullptr, 'W'},
       {"help", no_argument, nullptr, 'h'},
       {"tone", required_argument, nullptr, 't'},
       {"pipewire", no_argument, nullptr, 'p'},
@@ -296,7 +319,7 @@ static bool parse_options(int argc, char** argv, Options& opt) {
       {nullptr, 0, nullptr, 0}};
 
   int c;
-  while ((c = getopt_long(argc, argv, "b:P:u:a:v:l:t:prh", long_options, nullptr)) != -1) {
+  while ((c = getopt_long(argc, argv, "b:P:u:a:v:l:W:t:prh", long_options, nullptr)) != -1) {
     switch (c) {
       case 'b':
         opt.bond = optarg;
@@ -322,6 +345,9 @@ static bool parse_options(int argc, char** argv, Options& opt) {
       }
       case 'l':
         opt.log = optarg;
+        break;
+      case 'W':
+        opt.avoid_wifi = optarg;
         break;
       case 't': {
         char* end;
@@ -437,13 +463,18 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
+  avoid_wifi = !opt.avoid_wifi.empty();
+  if (avoid_wifi) {
+    std::string error;
+    if (!make_wifi_avoidance_map(opt.avoid_wifi, wifi_channel_map, error)) {
+      std::fprintf(stderr, "bad --avoid-wifi '%s': %s\n", opt.avoid_wifi.c_str(), error.c_str());
+      return EXIT_FAILURE;
+    }
+  }
+
   btstack_memory_init();
   btstack_run_loop_init(btstack_run_loop_posix_get_instance());
   watch_signals(sig_fd);
-
-  hci_dump_posix_fs_open(opt.log.c_str(), HCI_DUMP_BTSNOOP);
-  hci_dump_init(hci_dump_posix_fs_get_instance());
-  std::printf("HCI trace: %s\n", opt.log.c_str());
 
   // TLV is opened later, in main_hci_handler, once the adapter address is read
   hci_init(hci_transport_usb_instance(), nullptr);
@@ -464,6 +495,12 @@ int main(int argc, char** argv) {
   };
   if (!asha_start(cfg))
     return EXIT_FAILURE;
+
+  // Open only after all fallible input/source setup. A bad audio or bond path
+  // must not truncate an existing trace.
+  hci_dump_posix_fs_open(opt.log.c_str(), HCI_DUMP_BTSNOOP);
+  hci_dump_init(hci_dump_posix_fs_get_instance());
+  std::printf("HCI trace: %s\n", opt.log.c_str());
   next_timer.start(0);  // pick an adapter and power it on, from the run loop
 
   btstack_run_loop_execute();

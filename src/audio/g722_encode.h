@@ -16,6 +16,7 @@ public:
   G722Encoder(const G722Encoder& enc) = delete;
   G722Encoder& operator=(const G722Encoder& enc) const = delete;
 
+  void reset();
   void encode(std::span<const int16_t, G722_FRAME_SAMPLES> pcm, std::span<uint8_t, G722_FRAME_BYTES> out);
 
   ~G722Encoder();

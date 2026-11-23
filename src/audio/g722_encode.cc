@@ -19,6 +19,11 @@ G722Encoder::~G722Encoder() {
   g722_encode_free(state_);  // frees what init allocated
 }
 
+void G722Encoder::reset() {
+  if (!g722_encode_init(state_, 64000, 0))
+    throw std::runtime_error("g722_encode_init reset failed");
+}
+
 void G722Encoder::encode(
     std::span<const int16_t, G722_FRAME_SAMPLES> pcm, std::span<uint8_t, G722_FRAME_BYTES> out) {
   // returns the number of bytes written: 2 samples -> 1 byte

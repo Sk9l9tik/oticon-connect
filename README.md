@@ -142,6 +142,7 @@ The bond is now stored in `~/.local/state/oticon-connect/btstack_<adapter>.tlv`
 
 ```sh
 ./build/asha_probe --pipewire        # play into the "Oticon ASHA" output device
+./build/asha_probe --pipewire --avoid-wifi 6  # avoid a 2.4 GHz Wi-Fi channel
 ./build/asha_probe --tone 1000       # 1 kHz sine until Ctrl+C
 ./build/asha_probe -a assets/tone_1k.g722
 ```
@@ -166,10 +167,26 @@ PipeWire converts whatever is played to 16 kHz mono.
 | `-P`, `--peer ADDR` | aid identity address: picks a stored bond, or names the aid of a copied `--bond` file |
 | `-u`, `--usb PATH` | use only the adapter at these USB ports (`5`, or `1-2.3` as in `/sys/bus/usb/devices`); default: any Bluetooth adapter on USB, see [Which adapter](#which-adapter). The ports are printed at start |
 | `-l`, `--log PATH` | HCI trace, default `app.btsnoop` |
+| `-W`, `--avoid-wifi N[,N...]` | mark BLE data frequencies overlapping these 2.4 GHz Wi-Fi channels (1–13) as bad; at least 10 of 37 BLE channels must remain |
+
+`--avoid-wifi` changes the controller's LE channel classification. For example,
+`--avoid-wifi 6` excludes BLE data channels whose centers overlap the 22 MHz
+around Wi-Fi channel 6. Use the active 2.4 GHz channel, not every access point
+visible in a scan. Wi-Fi on 5 GHz does not need this option. The controller may
+reject the command; startup prints `BLE channel classification: status 0x00`
+when it accepted it.
 
 When the link drops (aid out of range, put into the charger), `asha_probe`
 scans and reconnects on its own, retrying after 1, 2, 4 … up to 30 s; the delay
-goes back to 1 s once streaming resumes.
+goes back to 1 s once streaming resumes. A channel which remains congested for
+one second is treated as wedged and reconnected instead of dropping audio
+forever.
+
+With `--pipewire`, 30 seconds without a non-silent sample sends ASHA Stop and
+changes the BLE connection to a low-duty-cycle interval. The encrypted link and
+the virtual sink stay available; playback automatically restores the 20 ms
+interval, resets the G.722 stream and sends ASHA Start. This avoids continuously
+transmitting 50 encoded-silence packets per second while nothing is playing.
 
 Ctrl+C stops cleanly: ASHA Stop, disconnect, power off. A second Ctrl+C exits
 at once; the dongle may then need replugging.
@@ -216,7 +233,9 @@ tone / file ──────────────────────�
 3. **AudioStream:** every 20 ms takes a frame from the source and queues the SDU
    `[seq][160 bytes G.722]`; sends one per L2CAP can-send event. When the link
    falls behind, the oldest frame is dropped: the aid plays a frame about 89 ms
-   after it is due, so an old frame is useless.
+   after it is due, so an old frame is useless. Sustained congestion reconnects
+   the link; the in-flight SDU has dedicated storage so it cannot be overwritten
+   while L2CAP still owns it.
 4. **PipeWire:** `PwSink` is an `Audio/Sink` stream (S16LE, 16 kHz, mono) whose
    realtime callback fills a lock-free single-producer/single-consumer ring;
    `PipeWireSource` drains it on the 20 ms clock with a small prefill and drops

@@ -20,6 +20,9 @@ class PwSink {
 
   SampleRing& ring() { return ring_; }
   size_t overflows() const { return overflows_; }  // samples lost: ring full
+  uint64_t signal_generation() const {
+    return signal_generation_.load(std::memory_order_relaxed);
+  }
 
   static void on_process(void* userdata);  // PipeWire realtime thread
 
@@ -31,6 +34,10 @@ class PwSink {
   pw_stream* stream_ = nullptr;
   SampleRing ring_;
   std::atomic<size_t> overflows_{0};
+  // Incremented once per PipeWire quantum containing a real (non-silent)
+  // sample. This lets the Bluetooth thread notice resumed playback while the
+  // ASHA frame clock is stopped.
+  std::atomic<uint64_t> signal_generation_{0};
 };
 
 #endif  // AUDIO_PW_SINK_H_

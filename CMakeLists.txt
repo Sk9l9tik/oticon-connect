@@ -72,6 +72,7 @@ add_executable(${project_name}
     src/app/asha_probe.cc
     src/app/main.cc
     src/app/usb_adapters.cc
+    src/app/wifi_avoidance.cc
 )
 target_link_libraries(${project_name} asha audio_pipewire)
 project_warnings(${project_name})
@@ -99,3 +100,16 @@ target_compile_options(ring_test PRIVATE -fsanitize=thread -g)
 target_link_options(ring_test PRIVATE -fsanitize=thread)
 project_warnings(ring_test)
 add_test(NAME ring_test COMMAND ring_test)
+
+add_executable(g722_reset_test tests/g722_reset_test.cc)
+target_link_libraries(g722_reset_test PRIVATE audio)
+project_warnings(g722_reset_test)
+add_test(NAME g722_reset_test COMMAND g722_reset_test)
+
+add_executable(wifi_avoidance_test
+    tests/wifi_avoidance_test.cc
+    src/app/wifi_avoidance.cc
+)
+target_include_directories(wifi_avoidance_test PRIVATE ${SRC})
+project_warnings(wifi_avoidance_test)
+add_test(NAME wifi_avoidance_test COMMAND wifi_avoidance_test)

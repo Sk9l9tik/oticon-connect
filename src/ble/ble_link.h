@@ -75,6 +75,9 @@ public:
   // Only after on_link_lost: scan again with the same bond
   void reconnect();
 
+  // Drop a wedged live link. The normal on_link_lost/reconnect path follows.
+  void recover();
+
   // --- GATT (one at a time) ---
   void discover_characteristics(
       uint16_t service_uuid16, std::function<void(bool ok, const std::vector<GattChar>&)> done);
@@ -82,15 +85,15 @@ public:
   void write(uint16_t value_handle, std::span<const uint8_t> value, Done done);
   void subscribe(uint16_t value_handle, Done done);  // notifications -> Listener
 
-  // interval in 1.25 ms units, latency 0, supervision timeout 2 s
-  void set_connection_interval(uint16_t interval, Done done);
+  // interval in 1.25 ms units; supervision timeout is 2 s
+  void set_connection_parameters(uint16_t interval, uint16_t latency, Done done);
 
   // --- L2CAP CoC ---
   void open_coc(uint16_t psm, std::function<void(bool ok, uint16_t peer_mtu)> done);
   void request_can_send();
   // Only from on_coc_can_send. BTstack keeps the pointer until the next
   // can-send event: `sdu` must stay valid until then.
-  void send(std::span<const uint8_t> sdu);
+  bool send(std::span<const uint8_t> sdu);
 
 private:
   enum class State {
