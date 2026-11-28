@@ -11,7 +11,7 @@ AudioStream::AudioStream(
 }
 
 void AudioStream::start() {
-  printf("streaming %s\n", source_.describe().c_str());
+  std::printf("streaming %s\n", source_.describe().c_str());
   source_.restart_stream();
   next_deadline_ms_ = btstack_run_loop_get_time_ms();
   last_send_ms_ = next_deadline_ms_;
@@ -31,7 +31,7 @@ void AudioStream::stop() {
   timer_.cancel();
   if (!was_running)
     return;
-  printf("done: %zu frames, sent %u, dropped %u\n", frames_, sent_, dropped_);
+  std::printf("done: %zu frames, sent %u, dropped %u\n", frames_, sent_, dropped_);
 }
 
 // Every 20 ms: put the next frame into the queue. It does not send: sending
@@ -59,20 +59,20 @@ void AudioStream::on_tick() {
     }
     if ((uint32_t)(now - last_send_ms_) >= STALL_TIMEOUT_MS ||
         (uint32_t)(now - congestion_since_ms_) >= STALL_TIMEOUT_MS) {
-      printf("audio channel stalled for %u ms; reconnecting\n", STALL_TIMEOUT_MS);
+      std::printf("audio channel stalled for %u ms; reconnecting\n", STALL_TIMEOUT_MS);
       running_ = false;
       on_stall_();
       return;
     }
   }
   ring_[tail_][0] = sequence_++;
-  memcpy(&ring_[tail_][1], frame, G722_FRAME_BYTES);
+  std::memcpy(&ring_[tail_][1], frame, G722_FRAME_BYTES);
   tail_ = (tail_ + 1) % RING;
   queued_++;
   link_.request_can_send();
   frames_++;  // source/statistics advance even when an older queued frame was dropped
   if (frames_ % 50 == 0)
-    printf(
+    std::printf(
         "  t=%4.1fs queued %u sent %u dropped %u\n", frames_ * FRAME_MS / 1000.0, queued_, sent_,
         dropped_);
 
@@ -86,7 +86,7 @@ void AudioStream::on_tick() {
 void AudioStream::on_can_send() {
   if (!running_ || queued_ == 0)
     return;
-  memcpy(in_flight_, ring_[head_], sizeof(in_flight_));
+  std::memcpy(in_flight_, ring_[head_], sizeof(in_flight_));
   if (!link_.send(in_flight_)) {
     running_ = false;
     on_stall_();

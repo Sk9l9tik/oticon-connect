@@ -1,6 +1,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 
+#include <memory>
 #include <stdexcept>
 
 #include "audio/pw_sink.h"
@@ -15,13 +16,38 @@ static pw_stream_events make_stream_events() {
 
 static const pw_stream_events stream_events = make_stream_events();
 
-PwSink::PwSink() {
-  pw_init(nullptr, nullptr);  // safe to call more than once, paired with pw_deinit
+struct PwSink::Resources {
+  struct StreamDeleter {
+    void operator()(pw_stream* stream) const { pw_stream_destroy(stream); }
+  };
+  struct LoopDeleter {
+    void operator()(pw_thread_loop* loop) const { pw_thread_loop_destroy(loop); }
+  };
+
+  using Stream = std::unique_ptr<pw_stream, StreamDeleter>;
+  using Loop = std::unique_ptr<pw_thread_loop, LoopDeleter>;
+
+  Resources() { pw_init(nullptr, nullptr); }
+  ~Resources() {
+    if (started)
+      pw_thread_loop_stop(loop.get());
+    stream.reset();
+    loop.reset();
+    pw_deinit();
+  }
+
+  Loop loop;
+  Stream stream;
+  bool started = false;
+};
+
+PwSink::PwSink() : resources_(std::make_unique<Resources>()) {
+  auto& resources = *resources_;
 
   // 1. own thread running PipeWire's main loop: events and process() run there
-  loop_ = pw_thread_loop_new("asha-pw", nullptr);
-  if (!loop_)
-    fail("pw_thread_loop_new");
+  resources.loop.reset(pw_thread_loop_new("asha-pw", nullptr));
+  if (!resources.loop)
+    throw std::runtime_error("pw_thread_loop_new failed");
 
   // 2. the stream = our node in the PipeWire graph
   pw_properties* props = pw_properties_new(
@@ -32,10 +58,11 @@ PwSink::PwSink() {
       PW_KEY_NODE_LATENCY, "320/16000",        // ask for a 20 ms quantum = one ASHA frame
       nullptr);
   // takes ownership of props, also on failure
-  stream_ = pw_stream_new_simple(
-      pw_thread_loop_get_loop(loop_), "Oticon ASHA", props, &stream_events, this);
-  if (!stream_)
-    fail("pw_stream_new_simple");
+  resources.stream.reset(pw_stream_new_simple(
+      pw_thread_loop_get_loop(resources.loop.get()), "Oticon ASHA", props, &stream_events, this));
+  if (!resources.stream)
+    throw std::runtime_error("pw_stream_new_simple failed");
+  stream_ = resources.stream.get();
 
   // 3. the only format we accept; PipeWire converts whatever apps play into it
   uint8_t pod_buf[1024];
@@ -52,16 +79,17 @@ PwSink::PwSink() {
   //    MAP_BUFFERS  - buffer memory is mmapped, d.data is ready to read
   //    RT_PROCESS   - process() runs directly in the realtime thread
   int res = pw_stream_connect(
-      stream_, PW_DIRECTION_INPUT, PW_ID_ANY,
+      resources.stream.get(), PW_DIRECTION_INPUT, PW_ID_ANY,
       static_cast<pw_stream_flags>(
           PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS),
       params, 1);
   if (res < 0)
-    fail("pw_stream_connect");
+    throw std::runtime_error("pw_stream_connect failed");
 
   // 5. go: from here on process() may run at any time
-  if (pw_thread_loop_start(loop_) < 0)
-    fail("pw_thread_loop_start");
+  if (pw_thread_loop_start(resources.loop.get()) < 0)
+    throw std::runtime_error("pw_thread_loop_start failed");
+  resources.started = true;
 }
 
 void PwSink::on_process(void* userdata) {
@@ -88,21 +116,8 @@ void PwSink::on_process(void* userdata) {
 }
 
 PwSink::~PwSink() {
-  cleanup();
-}
-
-void PwSink::cleanup() {
-  if (loop_)
-    pw_thread_loop_stop(loop_);  // first: on_process can't run after this
-  if (stream_)
-    pw_stream_destroy(stream_);
-  if (loop_)
-    pw_thread_loop_destroy(loop_);
-  pw_deinit();
-}
-
-// Constructor failed: the destructor won't run, free what exists and throw
-void PwSink::fail(const std::string& what) {
-  cleanup();
-  throw std::runtime_error(what + " failed");
+  if (resources_->started) {
+    pw_thread_loop_stop(resources_->loop.get());
+    resources_->started = false;
+  }
 }

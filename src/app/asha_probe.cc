@@ -42,7 +42,7 @@ static bool make_bond_spec(const AppConfig& cfg, BondSpec& spec) {
   bool have_peer = false;
   if (cfg.peer) {
     if (sscanf_bd_addr(cfg.peer, peer) != 1) {
-      fprintf(stderr, "bad peer address '%s'\n", cfg.peer);
+      std::fprintf(stderr, "bad peer address '%s'\n", cfg.peer);
       return false;
     }
     have_peer = true;
@@ -59,16 +59,16 @@ static bool make_bond_spec(const AppConfig& cfg, BondSpec& spec) {
   try {
     loaded = load_bond(cfg.bond, bond);
   } catch (const std::exception& e) {
-    fprintf(stderr, "bad bond file %s: %s\n", cfg.bond, e.what());
+    std::fprintf(stderr, "bad bond file %s: %s\n", cfg.bond, e.what());
   }
   if (!loaded) {
-    fprintf(stderr, "can't load bond from %s\n", cfg.bond);
+    std::fprintf(stderr, "can't load bond from %s\n", cfg.bond);
     return false;
   }
   if (have_peer) {
-    memcpy(bond.identity, peer, 6);
+    std::memcpy(bond.identity, peer, 6);
   } else if (!identity_from_path(cfg.bond, bond.identity)) {
-    fprintf(stderr, "%s: no address in the path, give it with --peer\n", cfg.bond);
+    std::fprintf(stderr, "%s: no address in the path, give it with --peer\n", cfg.bond);
     return false;
   }
   bd_addr_t adapter;
@@ -87,7 +87,7 @@ bool asha_start(const AppConfig& cfg) {
     try {
       source = std::make_unique<PipeWireSource>();
     } catch (const std::exception& e) {
-      fprintf(stderr, "PipeWire: %s\n", e.what());
+      std::fprintf(stderr, "PipeWire: %s\n", e.what());
       return false;
     }
   } else if (cfg.tone_hz > 0) {
@@ -95,7 +95,7 @@ bool asha_start(const AppConfig& cfg) {
   } else {
     auto file = std::make_unique<G722FileSource>();
     if (!file->load(cfg.audio)) {
-      fprintf(stderr, "can't load G.722 audio from %s\n", cfg.audio);
+      std::fprintf(stderr, "can't load G.722 audio from %s\n", cfg.audio);
       return false;
     }
     source = std::move(file);

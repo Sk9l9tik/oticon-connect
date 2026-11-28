@@ -32,7 +32,7 @@ int main() {
       continue;  // not enough yet
     for (int16_t s : frame) {
       if (s != (int16_t)expect) {
-        printf("FAIL at sample %zu: got %d, expected %d\n", expect, s, (int16_t)expect);
+        std::printf("FAIL at sample %zu: got %d, expected %d\n", expect, s, (int16_t)expect);
         producer.detach();
         return 1;
       }
@@ -40,6 +40,6 @@ int main() {
     }
   }
   producer.join();
-  printf("OK: %zu samples\n", expect);
+  std::printf("OK: %zu samples\n", expect);
   return 0;
 }

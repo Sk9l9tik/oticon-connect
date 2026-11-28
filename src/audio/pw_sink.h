@@ -2,10 +2,8 @@
 #define AUDIO_PW_SINK_H_
 
 #include "audio/sample_ring.h"
-#include <string>
+#include <memory>
 
-// PipeWire's types, so this header doesn't pull PipeWire in
-struct pw_thread_loop;
 struct pw_stream;
 
 // Virtual output device "Oticon ASHA" (S16LE, 16 kHz, mono). Apps play into it;
@@ -27,17 +25,17 @@ class PwSink {
   static void on_process(void* userdata);  // PipeWire realtime thread
 
  private:
-  void cleanup();
-  [[noreturn]] void fail(const std::string& what);
+  struct Resources;
 
-  pw_thread_loop* loop_ = nullptr;
-  pw_stream* stream_ = nullptr;
   SampleRing ring_;
   std::atomic<size_t> overflows_{0};
   // Incremented once per PipeWire quantum containing a real (non-silent)
   // sample. This lets the Bluetooth thread notice resumed playback while the
   // ASHA frame clock is stopped.
   std::atomic<uint64_t> signal_generation_{0};
+  // Borrowed from Resources; Resources owns the stream and destruction waits for callbacks.
+  pw_stream* stream_ = nullptr;
+  std::unique_ptr<Resources> resources_;
 };
 
 #endif  // AUDIO_PW_SINK_H_

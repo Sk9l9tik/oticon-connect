@@ -27,15 +27,15 @@ static const uint32_t STOP_TIMEOUT_MS = 2000;
 // ReadOnlyProperties, 17 bytes, layout in CPP_GUIDE.md
 static void print_rop(std::span<const uint8_t> v) {
   if (v.size() < 17) {
-    printf("ROP too short: %zu bytes\n", v.size());
+    std::printf("ROP too short: %zu bytes\n", v.size());
     return;
   }
-  printf(
+  std::printf(
       "ROP: version %u, %s, binaural %u, hisync ", v[0], (v[1] & 1) ? "right" : "left",
       (v[1] >> 1) & 1);
   for (int i = 0; i < 8; i++)
-    printf("%02x", v[2 + i]);
-  printf(
+    std::printf("%02x", v[2 + i]);
+  std::printf(
       ", feature_map 0x%02x, delay %u ms, codecs 0x%04x\n", v[10], v[11] | (v[12] << 8),
       v[15] | (v[16] << 8));
 }
@@ -48,7 +48,7 @@ AshaSession::AshaSession(
           source, link_, [this] { stop(); }, [this] { pause_stream(); },
           [this] { recover_stream(); }),
       on_finished_(std::move(on_finished)), on_no_bond_(std::move(on_no_bond)), stop_timer_([this] {
-        printf("no answer to Stop\n");
+        std::printf("no answer to Stop\n");
         link_.shutdown();
       }),
       volume_((uint8_t)(int8_t)volume) {
@@ -76,14 +76,14 @@ void AshaSession::stop() {
   static const uint8_t acp_stop[] = {0x02};
   stop_timer_.start(STOP_TIMEOUT_MS);
   link_.write(acp_, acp_stop, [this](bool ok) {
-    printf(ok ? "Stop written\n" : "Stop failed\n");
+    std::printf(ok ? "Stop written\n" : "Stop failed\n");
     stop_timer_.cancel();
     link_.shutdown();
   });
 }
 
 void AshaSession::fail_setup(const char* what) {
-  printf("%s failed\n", what);
+  std::printf("%s failed\n", what);
   stop();
 }
 
@@ -133,7 +133,7 @@ void AshaSession::read_psm() {
     if (!ok || v.size() < 2)
       return fail_setup("LE_PSM_OUT read");
     psm_ = v[0] | (v[1] << 8);
-    printf("LE_PSM_OUT 0x%04x\n", psm_);
+    std::printf("LE_PSM_OUT 0x%04x\n", psm_);
     subscribe_status();
   });
 }
@@ -142,7 +142,7 @@ void AshaSession::subscribe_status() {
   link_.subscribe(status_, [this](bool ok) {
     if (!ok)
       return fail_setup("AudioStatus subscribe");
-    printf("subscribed to AudioStatus\n");
+    std::printf("subscribed to AudioStatus\n");
     update_interval();
   });
 }
@@ -151,7 +151,7 @@ void AshaSession::update_interval() {
   link_.set_connection_parameters(INTERVAL_20MS, 0, [this](bool ok) {
     // a rejected update is not fatal: the stream may still fit the old interval
     if (!ok)
-      printf("warning: connection interval not changed\n");
+      std::printf("warning: connection interval not changed\n");
     open_coc();
   });
 }
@@ -179,9 +179,9 @@ void AshaSession::enter_idle() {
   state_ = State::Paused;
   link_.set_connection_parameters(IDLE_INTERVAL, IDLE_LATENCY, [this](bool ok) {
     if (!ok)
-      printf("warning: low-power connection parameters rejected\n");
+      std::printf("warning: low-power connection parameters rejected\n");
     if (!stopping_ && state_ == State::Paused) {
-      printf("stream idle; waiting for PipeWire audio\n");
+      std::printf("stream idle; waiting for PipeWire audio\n");
       idle_timer_.start(IDLE_POLL_MS);
     }
   });
@@ -189,7 +189,7 @@ void AshaSession::enter_idle() {
 
 void AshaSession::on_idle_timer() {
   if (state_ == State::Pausing) {
-    printf("no answer to idle Stop; reconnecting\n");
+    std::printf("no answer to idle Stop; reconnecting\n");
     recover_stream();
   } else {
     poll_resume();
@@ -203,11 +203,11 @@ void AshaSession::poll_resume() {
     idle_timer_.start(IDLE_POLL_MS);
     return;
   }
-  printf("PipeWire audio resumed\n");
+  std::printf("PipeWire audio resumed\n");
   state_ = State::Setup;
   link_.set_connection_parameters(INTERVAL_20MS, 0, [this](bool ok) {
     if (!ok)
-      printf("warning: streaming connection interval not restored\n");
+      std::printf("warning: streaming connection interval not restored\n");
     if (!stopping_ && state_ == State::Setup)
       write_start();
   });
@@ -238,7 +238,7 @@ void AshaSession::write_start() {
     if (!ok)
       return fail_setup("Start write");
     // AudioStatus may arrive before this response: on_notification handles it
-    printf("Start written, waiting for AudioStatus\n");
+    std::printf("Start written, waiting for AudioStatus\n");
   });
 }
 
@@ -251,7 +251,7 @@ void AshaSession::on_notification(uint16_t value_handle, std::span<const uint8_t
   if (value_handle != status_ || value.empty())
     return;
   int8_t audio_status = (int8_t)value[0];
-  printf("AudioStatus %d\n", audio_status);
+  std::printf("AudioStatus %d\n", audio_status);
   if (stopping_)
     return;
   if (state_ == State::Starting) {
@@ -262,7 +262,7 @@ void AshaSession::on_notification(uint16_t value_handle, std::span<const uint8_t
     stream_.start();
   } else if (state_ == State::Pausing) {
     if (audio_status != 0) {
-      printf("idle Stop rejected; reconnecting\n");
+      std::printf("idle Stop rejected; reconnecting\n");
       recover_stream();
       return;
     }
@@ -306,7 +306,7 @@ void AshaSession::on_link_lost(uint8_t reason) {
   idle_timer_.cancel();
   state_ = State::Setup;
   psm_ = rop_ = acp_ = status_ = volume_chr_ = psm_chr_ = 0;
-  printf("link lost 0x%02x, retry in %u ms\n", reason, backoff_ms_);
+  std::printf("link lost 0x%02x, retry in %u ms\n", reason, backoff_ms_);
   retry_timer_.start(backoff_ms_);
   backoff_ms_ = std::min(backoff_ms_ * 2, 30000u);
 }

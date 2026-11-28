@@ -179,7 +179,7 @@ when it accepted it.
 When the link drops (aid out of range, put into the charger), `asha_probe`
 scans and reconnects on its own, retrying after 1, 2, 4 … up to 30 s; the delay
 goes back to 1 s once streaming resumes. A channel which remains congested for
-one second is treated as wedged and reconnected instead of dropping audio
+10 seconds is treated as wedged and reconnected instead of dropping audio
 forever.
 
 With `--pipewire`, 30 seconds without a non-silent sample sends ASHA Stop and

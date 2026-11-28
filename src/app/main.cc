@@ -1,6 +1,5 @@
 // Entry point in place of port/libusb/main.c: options, signals, BTstack init.
 
-#include <getopt.h>
 #include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -28,6 +27,7 @@
 #include "hci_transport_usb.h"
 
 #include "app/asha_app.h"
+#include "app/options.h"
 #include "app/usb_adapters.h"
 #include "app/wifi_avoidance.h"
 
@@ -48,10 +48,10 @@ static bd_addr_t tlv_adapter;  // whose TLV is open
 // $XDG_STATE_HOME/oticon-connect/btstack_<adapter>.tlv, fallback ~/.local/state/...
 static std::string tlv_path(const bd_addr_t adapter) {
   std::string dir;
-  if (const char* x = getenv("XDG_STATE_HOME"); x && *x)
+  if (const char* x = std::getenv("XDG_STATE_HOME"); x && *x)
     dir = x;
   else
-    dir = std::string(getenv("HOME")) + "/.local/state";
+    dir = std::string(std::getenv("HOME")) + "/.local/state";
   dir += "/oticon-connect";
   mkdir(dir.c_str(), 0700);  // EEXIST is fine; ~/.local/state itself must exist
   return dir + "/btstack_" + bd_addr_to_str_with_delimiter(adapter, '-') + ".tlv";
@@ -59,11 +59,11 @@ static std::string tlv_path(const bd_addr_t adapter) {
 
 static void open_tlv(const bd_addr_t adapter) {
   if (tlv_open) {
-    if (memcmp(tlv_adapter, adapter, 6) == 0)  // read again, e.g. after a firmware download
+    if (std::memcmp(tlv_adapter, adapter, 6) == 0)  // read again, e.g. after a firmware download
       return;
     btstack_tlv_posix_deinit(&tlv_context);  // another adapter came up
   }
-  memcpy(tlv_adapter, adapter, 6);
+  std::memcpy(tlv_adapter, adapter, 6);
   std::string path = tlv_path(adapter);
   const btstack_tlv_t* tlv = btstack_tlv_posix_init_instance(&tlv_context, path.c_str());
   chmod(path.c_str(), 0600);  // LTKs inside
@@ -179,11 +179,11 @@ static void main_hci_handler(
       uint16_t vid = hci_event_transport_usb_info_get_vendor_id(packet);
       uint16_t pid = hci_event_transport_usb_info_get_product_id(packet);
       // ports in the --usb form (the bus field is only set when --usb gives one)
-      printf("USB device %04x:%04x, ports ", vid, pid);
+      std::printf("USB device %04x:%04x, ports ", vid, pid);
       const uint8_t* path = hci_event_transport_usb_info_get_path(packet);
       for (int i = 0; i < hci_event_transport_usb_info_get_path_len(packet); i++)
-        printf(i ? ".%u" : "%u", path[i]);
-      printf("\n");
+        std::printf(i ? ".%u" : "%u", path[i]);
+      std::printf("\n");
       if (vid == USB_VENDOR_ID_REALTEK) {
         btstack_chipset_realtek_set_product_id(pid);
         hci_set_chipset(btstack_chipset_realtek_instance());
@@ -267,123 +267,6 @@ static void main_hci_handler(
   }
 }
 
-struct Options {
-  std::string bond;                           // BlueZ info file to import; empty: stored bond
-  std::string peer;                           // identity address of the aid
-  std::string usb;                            // adapter by USB path "bus-port.port"
-  std::string audio = "assets/tone_1k.g722";  // raw G.722 frames, 160 bytes each
-  std::string log = "app.btsnoop";            // HCI trace, readable by btmon -r
-  std::string avoid_wifi;                     // 2.4 GHz Wi-Fi channels to avoid
-  int tone_hz = 0;        // > 0: endless sine encoded on the fly instead of the file
-  bool pipewire = false;  // audio from the PipeWire sink instead of the file
-  bool pair = false;      // new bonding with an aid in pairing mode
-  int volume = -50;       // ASHA volume, -128 (mute) .. 0 (max)
-};
-
-static void usage(const char* name) {
-  std::printf(
-      "usage: %s [options]\n"
-      "  -b, --bond PATH     import a BlueZ bond (/var/lib/bluetooth/<adapter>/<aid>/info);\n"
-      "                      without it the bond saved by an earlier import is used\n"
-      "  -r, --pair          pair with an aid in pairing mode (restart it first), the bond\n"
-      "                      is stored for this adapter; not with --bond\n"
-      "  -P, --peer ADDR     aid identity address: picks a stored bond, or names the aid\n"
-      "                      of a --bond file copied out of its BlueZ directory\n"
-      "  -u, --usb PATH      only the adapter at USB ports [bus-]port[.port...], as printed\n"
-      "                      at start or in /sys/bus/usb/devices (e.g. 1-2.3); default: every\n"
-      "                      Bluetooth adapter on USB, external first, the first with a bond\n"
-      "  -a, --audio PATH    G.722 file to stream (default assets/tone_1k.g722)\n"
-      "  -v, --volume N      volume -128..0 (default -50)\n"
-      "  -t, --tone HZ       endless sine 1..7999 Hz instead of the file\n"
-      "  -p, --pipewire      play what apps send to the PipeWire sink \"Oticon ASHA\"\n"
-      "  -l, --log PATH      HCI trace, btsnoop format (default app.btsnoop)\n"
-      "  -W, --avoid-wifi N  avoid 2.4 GHz Wi-Fi channels 1..13 (comma-separated)\n"
-      "  -h, --help          this help\n",
-      name);
-}
-
-// Returns false on a bad option; the caller prints usage and exits
-static bool parse_options(int argc, char** argv, Options& opt) {
-  static const option long_options[] = {
-      {"bond", required_argument, nullptr, 'b'},
-      {"peer", required_argument, nullptr, 'P'},
-      {"usb", required_argument, nullptr, 'u'},
-      {"audio", required_argument, nullptr, 'a'},
-      {"volume", required_argument, nullptr, 'v'},
-      {"log", required_argument, nullptr, 'l'},
-      {"avoid-wifi", required_argument, nullptr, 'W'},
-      {"help", no_argument, nullptr, 'h'},
-      {"tone", required_argument, nullptr, 't'},
-      {"pipewire", no_argument, nullptr, 'p'},
-      {"pair", no_argument, nullptr, 'r'},
-      {nullptr, 0, nullptr, 0}};
-
-  int c;
-  while ((c = getopt_long(argc, argv, "b:P:u:a:v:l:W:t:prh", long_options, nullptr)) != -1) {
-    switch (c) {
-      case 'b':
-        opt.bond = optarg;
-        break;
-      case 'P':
-        opt.peer = optarg;
-        break;
-      case 'u':
-        opt.usb = optarg;
-        break;
-      case 'a':
-        opt.audio = optarg;
-        break;
-      case 'v': {
-        char* end;
-        long v = std::strtol(optarg, &end, 10);
-        if (*end != '\0' || v < -128 || v > 0) {
-          fprintf(stderr, "bad volume '%s', expected -128..0\n", optarg);
-          return false;
-        }
-        opt.volume = static_cast<int>(v);
-        break;
-      }
-      case 'l':
-        opt.log = optarg;
-        break;
-      case 'W':
-        opt.avoid_wifi = optarg;
-        break;
-      case 't': {
-        char* end;
-        long t = std::strtol(optarg, &end, 10);
-        if (*end != '\0' || t < 1 || t > 7999) {
-          fprintf(stderr, "bad tone '%s', expected 1..7999\n", optarg);
-          return false;
-        }
-        opt.tone_hz = static_cast<int>(t);
-        break;
-      }
-      case 'p':
-        opt.pipewire = true;
-        break;
-      case 'r':
-        opt.pair = true;
-        break;
-      default:  // 'h' and '?' (getopt already printed the error)
-        return false;
-    }
-  }
-  if (opt.pipewire && opt.tone_hz > 0) {
-    std::fprintf(stderr, "--tone and --pipewire: pick one\n");
-    return false;
-  }
-  if (opt.pair && !opt.bond.empty()) {
-    std::fprintf(stderr, "--pair and --bond: pick one\n");
-    return false;
-  }
-  if (optind < argc) {
-    std::fprintf(stderr, "unexpected argument '%s'\n", argv[optind]);
-    return false;
-  }
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Signals
 // ---------------------------------------------------------------------------
@@ -423,7 +306,7 @@ static int block_signals() {
   sigaddset(&set, SIGINT);
   sigaddset(&set, SIGTERM);
   if (sigprocmask(SIG_BLOCK, &set, nullptr) != 0) {
-    perror("sigprocmask");
+    std::perror("sigprocmask");
     return -1;
   }
   int fd = signalfd(-1, &set, SFD_NONBLOCK | SFD_CLOEXEC);

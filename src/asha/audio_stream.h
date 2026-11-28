@@ -31,7 +31,7 @@ private:
   static const int FRAME_MS = 20;
   static const unsigned MAX_QUEUED = 2;  // 40 ms: + air retries stays under the render delay
   static const unsigned RING = 8;  // > MAX_QUEUED + 1 in flight, see on_can_send
-  static const uint32_t STALL_TIMEOUT_MS = 1000;
+  static const uint32_t STALL_TIMEOUT_MS = 10000;
 
   void on_tick();
 

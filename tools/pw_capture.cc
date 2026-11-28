@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  FILE* out = std::fopen(argv[1], "wb");
+  std::FILE* out = std::fopen(argv[1], "wb");
   if (!out) {
     std::perror(argv[1]);
     return EXIT_FAILURE;

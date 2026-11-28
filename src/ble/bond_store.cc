@@ -9,7 +9,7 @@ void bond_store_save(const Bond& bond) {
   le_device_db_encryption_set(
       index, bond.ediv, const_cast<uint8_t*>(bond.rand), const_cast<uint8_t*>(bond.ltk),
       bond.key_size, bond.authenticated, /*authorized*/ 0, bond.secure_connection);
-  printf("bond for %s saved, index %d\n", bd_addr_to_str(bond.identity), index);
+  std::printf("bond for %s saved, index %d\n", bd_addr_to_str(bond.identity), index);
 }
 
 // One entry: identity + IRK from le_device_db_info, LTK from _encryption_get
@@ -35,23 +35,23 @@ bool bond_store_find(const uint8_t* peer, Bond& out) {
     if (!read_entry(i, b))
       continue;
     if (peer) {
-      if (memcmp(b.identity, peer, 6) == 0) {
+      if (std::memcmp(b.identity, peer, 6) == 0) {
         out = b;
         return true;
       }
       continue;
     }
-    printf("stored bond: %s\n", bd_addr_to_str(b.identity));
+    std::printf("stored bond: %s\n", bd_addr_to_str(b.identity));
     if (found++ == 0)
       out = b;
   }
   if (peer) {
-    printf("no bond for %s, import it with --bond\n", bd_addr_to_str(peer));
+    std::printf("no bond for %s, import it with --bond\n", bd_addr_to_str(peer));
     return false;
   }
   if (found == 0)
-    printf("no stored bond, import one with --bond\n");
+    std::printf("no stored bond, import one with --bond\n");
   else if (found > 1)
-    printf("%d bonds stored, pick one with --peer\n", found);
+    std::printf("%d bonds stored, pick one with --peer\n", found);
   return found == 1;
 }

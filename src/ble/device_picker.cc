@@ -34,7 +34,7 @@ void DevicePicker::start() {
     btstack_run_loop_add_data_source(&ds_);
     active_ = true;
   }
-  printf("scanning; type a device number + Enter to pair (ASHA ones are marked)\n");
+  std::printf("scanning; type a device number + Enter to pair (ASHA ones are marked)\n");
 }
 
 void DevicePicker::stop() {
@@ -81,7 +81,7 @@ void DevicePicker::on_adv_report(const uint8_t* packet) {
 
   for (size_t i = 0; i < devices_.size(); i++) {
     ScanDevice& dev = devices_[i];
-    if (memcmp(dev.addr.data(), addr, 6) != 0)
+    if (std::memcmp(dev.addr.data(), addr, 6) != 0)
       continue;
     // known one: the scan response may bring the name or the ASHA data
     dev.rssi = gap_event_advertising_report_get_rssi(packet);
@@ -103,7 +103,7 @@ void DevicePicker::on_adv_report(const uint8_t* packet) {
   if (event_type != ADV_IND && event_type != ADV_DIRECT_IND)
     return;
   ScanDevice dev;
-  memcpy(dev.addr.data(), addr, 6);
+  std::memcpy(dev.addr.data(), addr, 6);
   dev.type = static_cast<bd_addr_type_t>(gap_event_advertising_report_get_address_type(packet));
   dev.name = name;
   dev.rssi = gap_event_advertising_report_get_rssi(packet);
@@ -114,7 +114,7 @@ void DevicePicker::on_adv_report(const uint8_t* packet) {
 
 void DevicePicker::print(size_t index, bool update) const {
   const ScanDevice& d = devices_[index];
-  printf(
+  std::printf(
       "%s[%zu] %s %-6s %4d dBm  %s%s\n", update ? "  " : "", index, bd_addr_to_str(d.addr.data()),
       d.type == BD_ADDR_TYPE_LE_PUBLIC ? "public" : "random", d.rssi,
       d.name.empty() ? "(no name)" : d.name.c_str(), d.asha ? "  <- ASHA" : "");
@@ -128,7 +128,7 @@ void DevicePicker::on_stdin() {
   char buf[64];
   ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
   if (n <= 0) {  // EOF (stdin not a terminal?) or error: nothing more to read
-    printf("stdin closed, can't pick a device\n");
+    std::printf("stdin closed, can't pick a device\n");
     stop();
     return;
   }
@@ -149,11 +149,11 @@ void DevicePicker::on_line(const std::string& line) {
   char* end;
   unsigned long i = std::strtoul(line.c_str(), &end, 10);
   if (*end != '\0' || i >= devices_.size()) {
-    printf("no device '%s'\n", line.c_str());
+    std::printf("no device '%s'\n", line.c_str());
     return;
   }
   ScanDevice dev = devices_[i];  // copy: start() may clear the list later
-  printf("pairing with [%lu] %s\n", i, bd_addr_to_str(dev.addr.data()));
+  std::printf("pairing with [%lu] %s\n", i, bd_addr_to_str(dev.addr.data()));
   stop();
   picked_(dev);
 }

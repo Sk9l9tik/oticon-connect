@@ -9,6 +9,7 @@
 
 #include <strings.h>
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -36,11 +37,11 @@ BleLink::BleLink(BondSpec bond, Listener& listener)
     : spec_(std::move(bond)), listener_(listener), con_handle_(HCI_CON_HANDLE_INVALID),
       enc_timer_([this] {
         // bonded: SM finds the LTK in le_device_db and re-encrypts, no pairing
-        printf("request encryption\n");
+        std::printf("request encryption\n");
         sm_request_pairing(con_handle_);
       }),
       stop_timer_([this] {
-        printf("stop timeout, link down anyway\n");
+        std::printf("stop timeout, link down anyway\n");
         go_down();
       }),
       picker_([this](const ScanDevice& d) { connect_picked(d); }) {
@@ -123,7 +124,7 @@ void BleLink::reconnect() {
 void BleLink::recover() {
   if (stopping_ || down_ || con_handle_ == HCI_CON_HANDLE_INVALID)
     return;
-  printf("recovering stalled audio link\n");
+  std::printf("recovering stalled audio link\n");
   gap_disconnect(con_handle_);
 }
 
@@ -146,7 +147,7 @@ void BleLink::connect_picked(const ScanDevice& d) {
 }
 
 void BleLink::fail(const char* what, uint8_t status) {
-  printf("%s failed 0x%02x\n", what, status);
+  std::printf("%s failed 0x%02x\n", what, status);
   if (con_handle_ != HCI_CON_HANDLE_INVALID)
     gap_disconnect(con_handle_);
 }
@@ -158,9 +159,9 @@ bool BleLink::pick_bond() {
   if (spec_.import) {
     bd_addr_t local;
     gap_local_bd_addr(local);
-    if (spec_.adapter && memcmp(local, spec_.adapter->data(), 6) != 0) {
-      printf("bond file is for adapter %s, ", bd_addr_to_str(spec_.adapter->data()));
-      printf("this is %s\n", bd_addr_to_str(local));
+    if (spec_.adapter && std::memcmp(local, spec_.adapter->data(), 6) != 0) {
+      std::printf("bond file is for adapter %s, ", bd_addr_to_str(spec_.adapter->data()));
+      std::printf("this is %s\n", bd_addr_to_str(local));
       return false;
     }
     bond_store_save(*spec_.import);
@@ -178,10 +179,10 @@ bool BleLink::rpa_matches_irk(const uint8_t* addr) const {
   uint32_t rk[RKLENGTH(128)];
   uint8_t plain[16] = {0};
   uint8_t cipher[16];
-  memcpy(&plain[13], &addr[0], 3);
+  std::memcpy(&plain[13], &addr[0], 3);
   int nrounds = rijndaelSetupEncrypt(rk, bond_.irk, 128);
   rijndaelEncrypt(rk, nrounds, plain, cipher);
-  return memcmp(&cipher[13], &addr[3], 3) == 0;
+  return std::memcmp(&cipher[13], &addr[3], 3) == 0;
 }
 
 gatt_client_characteristic_t* BleLink::find_char(uint16_t value_handle) {
@@ -262,7 +263,7 @@ void BleLink::on_gatt_event(uint8_t* packet) {
     case GATT_EVENT_SERVICE_QUERY_RESULT:
       gatt_event_service_query_result_get_service(packet, &service_);
       service_found_ = true;
-      printf("service 0x%04x-0x%04x\n", service_.start_group_handle, service_.end_group_handle);
+      std::printf("service 0x%04x-0x%04x\n", service_.start_group_handle, service_.end_group_handle);
       break;
     case GATT_EVENT_CHARACTERISTIC_QUERY_RESULT: {
       gatt_client_characteristic_t c;
@@ -270,9 +271,9 @@ void BleLink::on_gatt_event(uint8_t* packet) {
       btstack_chars_.push_back(c);
       std::string uuid = uuid128_to_str(c.uuid128);
       for (auto& ch : uuid)
-        ch = (char)tolower((unsigned char)ch);
+        ch = (char)std::tolower((unsigned char)ch);
       chars_.push_back({uuid, c.value_handle, (uint8_t)c.properties});
-      printf(
+      std::printf(
           "  chr %s value_handle 0x%04x props 0x%02x\n", uuid.c_str(), c.value_handle,
           c.properties);
       break;
@@ -288,7 +289,7 @@ void BleLink::on_gatt_event(uint8_t* packet) {
       if (state_ == State::ReadHash) {
         // our own setup query, see on_hci_event
         if (status == ATT_ERROR_ATTRIBUTE_NOT_FOUND) {
-          printf("no Database Hash (no Robust Caching)\n");
+          std::printf("no Database Hash (no Robust Caching)\n");
         } else if (status != ATT_ERROR_SUCCESS) {
           fail("Database Hash read", status);
           break;
@@ -300,7 +301,7 @@ void BleLink::on_gatt_event(uint8_t* packet) {
         break;
       }
       if (status != ATT_ERROR_SUCCESS)
-        printf("GATT error 0x%02x\n", status);
+        std::printf("GATT error 0x%02x\n", status);
       // moved out first: the callback usually starts the next query
       auto done = std::move(on_query_complete_);
       on_query_complete_ = nullptr;
@@ -343,7 +344,7 @@ void BleLink::request_can_send() {
 bool BleLink::send(std::span<const uint8_t> sdu) {
   uint8_t status = l2cap_send(coc_cid_, sdu.data(), (uint16_t)sdu.size());
   if (status != ERROR_CODE_SUCCESS)
-    printf("L2CAP send failed 0x%02x\n", status);
+    std::printf("L2CAP send failed 0x%02x\n", status);
   return status == ERROR_CODE_SUCCESS;
 }
 
@@ -358,9 +359,9 @@ void BleLink::on_coc_event(uint8_t* packet) {
       uint8_t status = l2cap_event_cbm_channel_opened_get_status(packet);
       uint16_t mtu = l2cap_event_cbm_channel_opened_get_remote_mtu(packet);
       if (status == ERROR_CODE_SUCCESS)
-        printf("CoC open, cid 0x%04x, peer MTU %u\n", coc_cid_, mtu);
+        std::printf("CoC open, cid 0x%04x, peer MTU %u\n", coc_cid_, mtu);
       else
-        printf("CoC open failed 0x%02x\n", status);
+        std::printf("CoC open failed 0x%02x\n", status);
       auto cb = std::move(on_coc_open_);
       on_coc_open_ = nullptr;
       if (cb)
@@ -372,7 +373,7 @@ void BleLink::on_coc_event(uint8_t* packet) {
         listener_.on_coc_can_send();
       break;
     case L2CAP_EVENT_CHANNEL_CLOSED:
-      printf("CoC closed\n");
+      std::printf("CoC closed\n");
       break;
     default:
       break;
@@ -399,7 +400,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
         break;
       }
       if (!spec_.pair)
-        printf("peer %s, start scan\n", bd_addr_to_str(bond_.identity));
+        std::printf("peer %s, start scan\n", bd_addr_to_str(bond_.identity));
       start_scan();
       break;
 
@@ -418,7 +419,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
       gap_event_advertising_report_get_address(packet, addr);
       if (!rpa_matches_irk(addr))
         break;
-      printf(
+      std::printf(
           "found peer %s type %u\n", bd_addr_to_str(addr),
           gap_event_advertising_report_get_advertising_event_type(packet));
       gap_stop_scan();  // quirk: scan must be off BEFORE connecting
@@ -434,7 +435,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
       uint8_t status = gap_subevent_le_connection_complete_get_status(packet);
       if (status != ERROR_CODE_SUCCESS) {
         // also the result of gap_connect_cancel() on shutdown (0x02)
-        printf("connect failed 0x%02x\n", status);
+        std::printf("connect failed 0x%02x\n", status);
         if (stopping_)
           go_down();
         else
@@ -447,7 +448,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
         gap_disconnect(con_handle_);
         break;
       }
-      printf(
+      std::printf(
           "connected, handle 0x%04x, interval %u x 1.25 ms\n", con_handle_,
           gap_subevent_le_connection_complete_get_conn_interval(packet));
       state_ = State::Connected;
@@ -460,7 +461,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
       if (hci_event_le_meta_get_subevent_code(packet) != HCI_SUBEVENT_LE_CONNECTION_UPDATE_COMPLETE)
         break;
       uint8_t status = hci_subevent_le_connection_update_complete_get_status(packet);
-      printf(
+      std::printf(
           "conn update: status 0x%02x, interval %u x 1.25 ms, latency %u, "
           "timeout %u x 10 ms\n",
           status, hci_subevent_le_connection_update_complete_get_conn_interval(packet),
@@ -476,7 +477,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
     case HCI_EVENT_DISCONNECTION_COMPLETE: {
       // 0x16 = we disconnected, 0x13 = the peer did, 0x08 = supervision timeout
       uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
-      printf("disconnected, reason 0x%02x\n", reason);
+      std::printf("disconnected, reason 0x%02x\n", reason);
       con_handle_ = HCI_CON_HANDLE_INVALID;
       if (stopping_) {
         go_down();
@@ -493,7 +494,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
       // only v2. Same layout up to encryption_enabled, v1 getters read both
       uint8_t status = hci_event_encryption_change_get_status(packet);
       uint8_t enabled = hci_event_encryption_change_get_encryption_enabled(packet);
-      printf("encryption change: status 0x%02x, enabled %u\n", status, enabled);
+      std::printf("encryption change: status 0x%02x, enabled %u\n", status, enabled);
       if (status != ERROR_CODE_SUCCESS || !enabled) {
         fail("encryption", status);
         break;
@@ -510,20 +511,20 @@ void BleLink::on_hci_event(uint8_t* packet) {
     case SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED: {
       bd_addr_t id;
       sm_event_identity_resolving_succeeded_get_identity_address(packet, id);
-      printf("SM resolved RPA -> %s\n", bd_addr_to_str(id));
-      memcpy(paired_identity_, id, 6);  // --pair: the picked device is already bonded
+      std::printf("SM resolved RPA -> %s\n", bd_addr_to_str(id));
+      std::memcpy(paired_identity_, id, 6);  // --pair: the picked device is already bonded
       break;
     }
     case SM_EVENT_IDENTITY_RESOLVING_FAILED:
-      printf("SM: RPA not resolved (bond not in db?)\n");
+      std::printf("SM: RPA not resolved (bond not in db?)\n");
       break;
     case SM_EVENT_PAIRING_STARTED:
       // bad sign: SM did not find the LTK and pairs from scratch
-      printf("!!! new pairing started: bond not used\n");
+      std::printf("!!! new pairing started: bond not used\n");
       break;
     case SM_EVENT_REENCRYPTION_COMPLETE: {
       uint8_t st = sm_event_reencryption_complete_get_status(packet);
-      printf("re-encryption status 0x%02x\n", st);
+      std::printf("re-encryption status 0x%02x\n", st);
       // --pair with a device that is already bonded: SM re-encrypts with the
       // stored LTK, no PAIRING_COMPLETE follows. Use that bond; comes before
       // HCI_EVENT_ENCRYPTION_CHANGE (SM's handler runs first), which then
@@ -534,7 +535,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
         fail("bond after re-encryption", 0);
         break;
       }
-      printf("already bonded with %s, using the stored bond\n", bd_addr_to_str(bond_.identity));
+      std::printf("already bonded with %s, using the stored bond\n", bd_addr_to_str(bond_.identity));
       spec_.pair = false;
       break;
     }
@@ -548,7 +549,7 @@ void BleLink::on_hci_event(uint8_t* packet) {
     case SM_EVENT_PAIRING_COMPLETE: {
       uint8_t st = sm_event_pairing_complete_get_status(packet);
       if (st != ERROR_CODE_SUCCESS) {
-        printf("pairing reason 0x%02x\n", sm_event_pairing_complete_get_reason(packet));
+        std::printf("pairing reason 0x%02x\n", sm_event_pairing_complete_get_reason(packet));
         fail("pairing", st);
         break;
       }

@@ -18,14 +18,14 @@ bool G722FileSource::load(const char* path) {
 bool G722FileSource::next(std::span<uint8_t, G722_FRAME_BYTES> out) {
   if (pos_ >= frames_)
     return false;
-  memcpy(out.data(), &data_[pos_ * G722_FRAME_BYTES], G722_FRAME_BYTES);
+  std::memcpy(out.data(), &data_[pos_ * G722_FRAME_BYTES], G722_FRAME_BYTES);
   pos_++;
   return true;
 }
 
 std::string G722FileSource::describe() const {
   char buf[64];
-  snprintf(buf, sizeof(buf), "%zu frames (%.1f s)", frames_, frames_ * 0.020);
+  std::snprintf(buf, sizeof(buf), "%zu frames (%.1f s)", frames_, frames_ * 0.020);
   return buf;
 }
 

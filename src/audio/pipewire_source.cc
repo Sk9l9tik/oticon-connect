@@ -35,7 +35,7 @@ bool PipeWireSource::next(std::span<uint8_t, G722_FRAME_BYTES> out) {
   encoder_.encode(pcm, out);
 
   if (++frames_ % STATS_EVERY == 0)
-    printf(
+    std::printf(
         "  pw: ring %zu, underruns %u, skipped %zu, overflows %zu\n", ring.size(), underruns_,
         skipped_, sink_.overflows());
   return true;

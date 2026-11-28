@@ -15,9 +15,19 @@ pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
 
 include(cmake/btstack.cmake)
 
+set(OTICON_SANITIZER "thread" CACHE STRING "Sanitizer: none, thread (ring test), address-undefined")
+set_property(CACHE OTICON_SANITIZER PROPERTY STRINGS none thread address-undefined)
+if(NOT OTICON_SANITIZER MATCHES "^(none|thread|address-undefined)$")
+  message(FATAL_ERROR "Unknown OTICON_SANITIZER: ${OTICON_SANITIZER}")
+endif()
+
 # Warnings for our code only (BTstack is built as is)
 function(project_warnings target)
-  target_compile_options(${target} PRIVATE -Wall -Wextra)
+  target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+  if(OTICON_SANITIZER STREQUAL "address-undefined")
+    target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+  endif()
 endfunction()
 
 # Includes are relative to src/: #include "ble/ble_link.h"
@@ -71,6 +81,7 @@ project_warnings(asha)
 add_executable(${project_name}
     src/app/asha_probe.cc
     src/app/main.cc
+    src/app/options.cc
     src/app/usb_adapters.cc
     src/app/wifi_avoidance.cc
 )
@@ -96,8 +107,10 @@ enable_testing()
 # SPSC ring under two threads; ThreadSanitizer catches wrong memory orders
 add_executable(ring_test tests/ring_test.cc)
 target_include_directories(ring_test PRIVATE ${SRC})
-target_compile_options(ring_test PRIVATE -fsanitize=thread -g)
-target_link_options(ring_test PRIVATE -fsanitize=thread)
+if(OTICON_SANITIZER STREQUAL "thread")
+  target_compile_options(ring_test PRIVATE -fsanitize=thread -g)
+  target_link_options(ring_test PRIVATE -fsanitize=thread)
+endif()
 project_warnings(ring_test)
 add_test(NAME ring_test COMMAND ring_test)
 
@@ -113,3 +126,14 @@ add_executable(wifi_avoidance_test
 target_include_directories(wifi_avoidance_test PRIVATE ${SRC})
 project_warnings(wifi_avoidance_test)
 add_test(NAME wifi_avoidance_test COMMAND wifi_avoidance_test)
+
+add_executable(options_test tests/options_test.cc src/app/options.cc)
+target_include_directories(options_test PRIVATE ${SRC})
+project_warnings(options_test)
+add_test(NAME options_test COMMAND options_test)
+
+add_executable(pw_sink_lifetime_test tests/pw_sink_lifetime_test.cc src/audio/pw_sink.cc)
+target_include_directories(pw_sink_lifetime_test PRIVATE ${SRC})
+target_link_libraries(pw_sink_lifetime_test PRIVATE PkgConfig::PIPEWIRE)
+project_warnings(pw_sink_lifetime_test)
+add_test(NAME pw_sink_lifetime_test COMMAND pw_sink_lifetime_test)
